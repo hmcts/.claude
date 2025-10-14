@@ -2,11 +2,19 @@
   "name": "expressjs-monorepo",
   "version": "1.0.0",
   "description": "HMCTS ExpressJS monorepo development workflow with GOV.UK standards, specialized agents, and quality hooks",
-  "author": "HMCTS",
+  "author": {
+    "name": "HMCTS"
+  },
   "homepage": "https://github.com/hmcts/.claude",
   "repository": "https://github.com/hmcts/.claude",
   "commands": "./commands/",
-  "agents": "./agents/",
+  "agents": [
+    "./agents/full-stack-engineer.md",
+    "./agents/infrastructure-engineer.md",
+    "./agents/test-engineer.md",
+    "./agents/ui-ux-engineer.md",
+    "./agents/code-reviewer.md"
+  ],
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json"
 }
