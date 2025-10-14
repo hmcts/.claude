@@ -1,0 +1,14 @@
+{
+  "name": "hmcts",
+  "owner": {
+    "name": "HMCTS",
+    "email": "hmcts@justice.gov.uk"
+  },
+  "plugins": [
+    {
+      "name": "expressjs-monorepo",
+      "source": "./expressjs-monorepo",
+      "description": "HMCTS ExpressJS monorepo development workflow with GOV.UK standards, specialized agents, and quality hooks"
+    }
+  ]
+}

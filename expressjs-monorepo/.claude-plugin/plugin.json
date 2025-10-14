@@ -1,0 +1,7 @@
+{
+  "name": "expressjs-monorepo",
+  "version": "1.0.0",
+  "description": "HMCTS ExpressJS monorepo development workflow with GOV.UK standards, specialized agents, and quality hooks",
+  "author": "HMCTS",
+  "homepage": "https://github.com/hmcts/.claude"
+}
