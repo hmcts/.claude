@@ -1,14 +1,77 @@
-{
-  "PreToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-bash.sh" }]
+  {
+    "hooks": {
+      "UserPromptSubmit": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+            }
+          ]
+        }
+      ],
+      "PreToolUse": [
+        {
+          "matcher": "Bash",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre-bash.sh"
+            }
+          ]
+        },
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+            }
+          ]
+        }
+      ],
+      "PostToolUse": [
+        {
+          "matcher": "Edit|Write|MultiEdit",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-write.sh"
+            }
+          ]
+        },
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+            }
+          ]
+        }
+      ],
+      "Stop": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+            }
+          ]
+        }
+      ],
+      "PreCompact": [
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+            }
+          ]
+        }
+      ]
     }
-  ],
-  "PostToolUse": [
-    {
-      "matcher": "Edit|Write|MultiEdit",
-      "hooks": [{ "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-write.sh" }]
-    }
-  ]
-}
+  }
