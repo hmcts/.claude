@@ -19,7 +19,7 @@ export class JiraClient {
    * Make an HTTP request to JIRA API
    */
   async request(method, path, body = null, extraHeaders = {}) {
-    const url = new URL(`${this.baseUrl}/rest/api/3${path}`);
+    const url = new URL(`${this.baseUrl}/rest/api/2${path}`);
 
     const options = {
       method,
