@@ -6,7 +6,9 @@ const { execSync } = require("child_process");
 
 class SimpleAnalytics {
   constructor() {
-    this.dataDir = path.join(__dirname, "analytics");
+    // Use CLAUDE_PROJECT_DIR to store analytics in the consuming project, not the plugin directory
+    const projectDir = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+    this.dataDir = path.join(projectDir, ".claude", "analytics");
     this.sessionsFile = path.join(this.dataDir, "sessions.csv");
     this.turnsFile = path.join(this.dataDir, "turns.csv");
     this.commitsFile = path.join(this.dataDir, "commits.csv");
