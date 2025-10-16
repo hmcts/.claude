@@ -13,6 +13,7 @@
         "run",
         "-i",
         "--rm",
+        "--init",
         "--env-file", "${CLAUDE_PROJECT_DIR}/.claude/.mcp.env",
         "-e", "ENABLED_TOOLS=jira_get_issue,jira_download_attachments,jira_search",
         "-v", "${CLAUDE_PROJECT_DIR}:/workspace",
