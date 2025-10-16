@@ -267,6 +267,14 @@ class MCPServer {
     rl.on('line', async (line) => {
       try {
         const message = JSON.parse(line);
+
+        // Check if this is a notification (no id means no response expected)
+        if (!message.id) {
+          // This is a notification, just log it and don't respond
+          console.error(`[JIRA MCP] Received notification: ${message.method}`);
+          return;
+        }
+
         const response = await this.handleRequest(message);
 
         // Write response to stdout (MCP protocol)
