@@ -13,9 +13,9 @@
         "run",
         "-i",
         "--rm",
-        "--env-file", ".mcp.env",
+        "--env-file", "${CLAUDE_PROJECT_DIR}/.claude/.mcp.env",
         "-e", "ENABLED_TOOLS=jira_get_issue,jira_download_attachments,jira_search",
-        "-v", "${PWD}:/workspace",
+        "-v", "${CLAUDE_PROJECT_DIR}:/workspace",
         "-w", "/workspace",
         "ghcr.io/sooperset/mcp-atlassian:latest"
       ]
