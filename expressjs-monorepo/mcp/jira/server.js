@@ -18,7 +18,11 @@ import { downloadAttachments } from './tools/download-attachments.js';
  * Load environment variables from .claude/.mcp.env if it exists in PWD
  */
 function loadEnvFile() {
-  const envPath = join(process.cwd(), '.claude', '.mcp.env');
+  const cwd = process.cwd();
+  const envPath = join(cwd, '.claude', '.mcp.env');
+
+  console.error(`[JIRA MCP] Current working directory: ${cwd}`);
+  console.error(`[JIRA MCP] Looking for env file at: ${envPath}`);
 
   if (existsSync(envPath)) {
     try {
@@ -47,6 +51,8 @@ function loadEnvFile() {
     } catch (error) {
       console.error(`[JIRA MCP] Warning: Failed to load ${envPath}:`, error.message);
     }
+  } else {
+    console.error(`[JIRA MCP] No .mcp.env file found at ${envPath}`);
   }
 }
 
