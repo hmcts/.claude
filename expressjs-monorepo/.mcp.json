@@ -8,17 +8,12 @@
     },
     "jira": {
       "type": "stdio",
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "--env-file", "${PWD}/.claude/.mcp.env",
-        "-e", "ENABLED_TOOLS=jira_get_issue,jira_download_attachments,jira_search",
-        "-v", "${CLAUDE_PROJECT_DIR}:/workspace",
-        "-w", "/workspace",
-        "ghcr.io/sooperset/mcp-atlassian:latest"
-      ]
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/jira/server.js"],
+      "env": {
+        "JIRA_URL": "https://tools.hmcts.net/jira",
+        "JIRA_PERSONAL_TOKEN": "${JIRA_PERSONAL_TOKEN}"
+      }
     }
   }
 }
