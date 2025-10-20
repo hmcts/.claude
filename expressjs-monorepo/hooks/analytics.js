@@ -18,14 +18,18 @@ class SimpleAnalytics {
     this.gitOpsFile = path.join(this.dataDir, "git_operations.csv");
     this.compactionsFile = path.join(this.dataDir, "compactions.csv");
     this.turnStateFile = path.join(this.dataDir, "turn_state.json"); // NEW: persist turn state
+    this.ticketsFile = path.join(this.dataDir, "jira_tickets.csv");
+    this.ticketStateFile = path.join(this.dataDir, "ticket_state.json");
 
     this.userId = this.getUserId();
     this.repoInfo = this.getRepoInfo();
     this.currentTurn = {}; // Track turn number per session
+    this.currentTicket = {}; // Track current ticket per session
 
     this.ensureDataDirectory();
     this.ensureCSVHeaders();
     this.loadTurnState(); // NEW: load persisted turn state
+    this.loadTicketState(); // NEW: load persisted ticket state
   }
 
   getUserId() {
@@ -90,38 +94,98 @@ class SimpleAnalytics {
     }
   }
 
+  loadTicketState() {
+    try {
+      if (fs.existsSync(this.ticketStateFile)) {
+        const stateData = fs.readFileSync(this.ticketStateFile, "utf8");
+        this.currentTicket = JSON.parse(stateData);
+      }
+    } catch (error) {
+      console.error(`Error loading ticket state: ${error.message}`);
+      this.currentTicket = {};
+    }
+  }
+
+  saveTicketState() {
+    try {
+      fs.writeFileSync(this.ticketStateFile, JSON.stringify(this.currentTicket, null, 2));
+    } catch (error) {
+      console.error(`Error saving ticket state: ${error.message}`);
+    }
+  }
+
+  setCurrentTicket(sessionId, ticketData) {
+    if (!this.currentTicket[sessionId]) {
+      // Initialize new ticket tracking
+      this.currentTicket[sessionId] = {
+        ticketId: ticketData.ticketId,
+        storyPoints: ticketData.storyPoints || null,
+        ticketType: ticketData.ticketType || 'Unknown',
+        priority: ticketData.priority || null,
+        status: ticketData.status || 'Unknown',
+        projectKey: ticketData.projectKey || '',
+        startedAt: ticketData.startedAt || Date.now(),
+        lastActivityAt: Date.now(),
+        totalTurns: 0,
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalCost: 0,
+        commitsCount: 0
+      };
+    } else {
+      // Update existing ticket with new data (e.g., story points from Jira)
+      this.currentTicket[sessionId] = {
+        ...this.currentTicket[sessionId],
+        ticketId: ticketData.ticketId || this.currentTicket[sessionId].ticketId,
+        storyPoints: ticketData.storyPoints || this.currentTicket[sessionId].storyPoints,
+        ticketType: ticketData.ticketType || this.currentTicket[sessionId].ticketType,
+        priority: ticketData.priority || this.currentTicket[sessionId].priority,
+        status: ticketData.status || this.currentTicket[sessionId].status,
+        projectKey: ticketData.projectKey || this.currentTicket[sessionId].projectKey,
+        lastActivityAt: Date.now()
+      };
+    }
+
+    this.saveTicketState();
+  }
+
+  getCurrentTicket(sessionId) {
+    return this.currentTicket[sessionId] || null;
+  }
+
   ensureCSVHeaders() {
     // Sessions CSV
     if (!fs.existsSync(this.sessionsFile)) {
       this.appendCSV(
         this.sessionsFile,
-        "session_id,user_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns"
+        "session_id,user_id,ticket_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns"
       );
     }
 
     // Turns CSV - NEW
     if (!fs.existsSync(this.turnsFile)) {
-      this.appendCSV(this.turnsFile, "session_id,user_id,turn_number,started_at,ended_at,tool_count,total_cost_usd,was_interrupted");
+      this.appendCSV(this.turnsFile, "session_id,user_id,ticket_id,turn_number,started_at,ended_at,tool_count,total_cost_usd,was_interrupted");
     }
 
     // Commits CSV - with LOC changes
     if (!fs.existsSync(this.commitsFile)) {
       this.appendCSV(
         this.commitsFile,
-        "commit_sha,session_id,user_id,repo_name,branch,commit_message,author_email,committed_at,files_changed,insertions,deletions,total_loc_changed"
+        "commit_sha,session_id,user_id,ticket_id,repo_name,branch,commit_message,author_email,committed_at,files_changed,insertions,deletions,total_loc_changed"
       );
     }
 
     // Tools CSV - add user_id and turn_number
     if (!fs.existsSync(this.toolsFile)) {
-      this.appendCSV(this.toolsFile, "session_id,user_id,turn_number,tool_name,started_at,completed_at,success,processing_time_ms,input_size,output_size");
+      this.appendCSV(this.toolsFile, "session_id,user_id,ticket_id,turn_number,tool_name,started_at,completed_at,success,processing_time_ms,input_size,output_size");
     }
 
     // Costs CSV - add user_id and turn_number
     if (!fs.existsSync(this.costsFile)) {
       this.appendCSV(
         this.costsFile,
-        "session_id,user_id,turn_number,message_id,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp"
+        "session_id,user_id,ticket_id,turn_number,message_id,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp"
       );
     }
 
@@ -140,6 +204,14 @@ class SimpleAnalytics {
       this.appendCSV(
         this.compactionsFile,
         "session_id,user_id,turn_number,timestamp,tokens_before,tokens_after,reduction_tokens,reduction_percent,compaction_type,trigger_reason"
+      );
+    }
+
+    // Jira Tickets CSV - Track ticket-level metrics
+    if (!fs.existsSync(this.ticketsFile)) {
+      this.appendCSV(
+        this.ticketsFile,
+        "ticket_id,session_id,user_id,story_points,ticket_type,priority,status,project_key,started_at,last_activity_at,total_turns,total_tokens,input_tokens,output_tokens,total_cost_usd,commits_count"
       );
     }
   }
@@ -183,10 +255,16 @@ class SimpleAnalytics {
 
       if (hook_event_name === "UserPromptSubmit") {
         await this.handleTurnStart(session_id, eventData);
+        await this.detectTicketFromPrompt(session_id, eventData);
       } else if (hook_event_name === "PreToolUse" && tool_name) {
         await this.handleToolStart(session_id || this.generateSessionId(), tool_name, eventData);
       } else if (hook_event_name === "PostToolUse" && tool_name) {
         await this.handleToolEnd(session_id, tool_name, eventData);
+
+        // Capture Jira ticket data
+        if (tool_name === "jira_get_issue") {
+          await this.handleJiraTicketFetch(session_id, eventData);
+        }
       } else if (hook_event_name === "PreCompact") {
         await this.handleCompaction(session_id, eventData);
       } else if (hook_event_name === "Stop") {
@@ -240,6 +318,69 @@ class SimpleAnalytics {
 
   getCurrentTurnNumber(sessionId) {
     return this.currentTurn[sessionId]?.number || 1;
+  }
+
+  async detectTicketFromPrompt(sessionId, eventData) {
+    try {
+      const prompt = eventData.prompt || '';
+
+      // Match ticket patterns like PROJ-123, ABC-456
+      const ticketPattern = /\b([A-Z]{2,10}-\d+)\b/g;
+      const matches = prompt.match(ticketPattern);
+
+      if (matches && matches.length > 0) {
+        const ticketId = matches[0];
+
+        // Only set if we don't already have a ticket for this session
+        if (!this.currentTicket[sessionId]) {
+          this.setCurrentTicket(sessionId, {
+            ticketId: ticketId,
+            storyPoints: null,
+            ticketType: 'Unknown',
+            status: 'Unknown',
+            projectKey: ticketId.split('-')[0],
+            startedAt: Date.now()
+          });
+        }
+      }
+    } catch (error) {
+      console.error(`Error detecting ticket from prompt: ${error.message}`);
+    }
+  }
+
+  async handleJiraTicketFetch(sessionId, eventData) {
+    try {
+      const toolOutput = eventData.tool_output;
+
+      // Parse Jira response
+      if (toolOutput && toolOutput.success && toolOutput.issue) {
+        const issue = toolOutput.issue;
+        const fields = issue.fields;
+
+        // Auto-detect story points from common custom field names
+        const storyPoints = fields.customfield_10016 ||
+                            fields.customfield_10026 ||
+                            fields.customfield_10036 ||
+                            fields.customfield_10106 ||
+                            fields.storyPoints ||
+                            fields['Story Points'] ||
+                            null;
+
+        const ticketData = {
+          ticketId: issue.key,
+          storyPoints: storyPoints,
+          ticketType: fields.issueType?.name || 'Unknown',
+          priority: fields.priority?.name || null,
+          status: fields.status?.name || 'Unknown',
+          projectKey: fields.project?.key || issue.key.split('-')[0],
+          startedAt: Date.now()
+        };
+
+        this.setCurrentTicket(sessionId, ticketData);
+      }
+    } catch (error) {
+      console.error(`Error handling Jira ticket fetch: ${error.message}`);
+    }
   }
 
   categorizePrompt(promptText) {
@@ -320,9 +461,13 @@ class SimpleAnalytics {
       return;
     }
 
+    const ticket = this.getCurrentTicket(sessionId);
+    const ticketId = ticket ? ticket.ticketId : '';
+
     const turnData = [
       sessionId,
       this.userId,
+      ticketId,
       this.currentTurn[sessionId].number,
       this.currentTurn[sessionId].startTime,
       endTime,
@@ -334,11 +479,20 @@ class SimpleAnalytics {
       .join(",");
 
     this.appendCSV(this.turnsFile, turnData);
+
+    // Update ticket metrics
+    if (ticket) {
+      ticket.totalTurns++;
+      ticket.lastActivityAt = endTime;
+      this.saveTicketState();
+    }
   }
 
   async handleToolStart(sessionId, toolName, eventData) {
     const now = Date.now();
     const turnNumber = this.getCurrentTurnNumber(sessionId);
+    const ticket = this.getCurrentTicket(sessionId);
+    const ticketId = ticket ? ticket.ticketId : '';
 
     // Increment tool count for this turn
     if (this.currentTurn[sessionId]) {
@@ -349,6 +503,7 @@ class SimpleAnalytics {
     const toolData = [
       sessionId,
       this.userId,
+      ticketId,
       turnNumber,
       toolName,
       now,
@@ -379,6 +534,8 @@ class SimpleAnalytics {
     const now = Date.now();
     const { tool_output, success = true, error } = eventData;
     const turnNumber = this.getCurrentTurnNumber(sessionId);
+    const ticket = this.getCurrentTicket(sessionId);
+    const ticketId = ticket ? ticket.ticketId : '';
 
     // Calculate processing time
     let processingTime = "";
@@ -393,6 +550,7 @@ class SimpleAnalytics {
     const completionData = [
       sessionId,
       this.userId,
+      ticketId,
       turnNumber,
       toolName,
       "", // started_at - empty since this is completion record
@@ -453,10 +611,15 @@ class SimpleAnalytics {
       if (tokenRecords.length > 0) {
         const latestRecord = tokenRecords[tokenRecords.length - 1];
 
+        // Get ticket ID for cost tracking
+        const ticket = this.getCurrentTicket(sessionId);
+        const ticketId = ticket ? ticket.ticketId : '';
+
         // Write cost data to CSV
         const costData = [
           sessionId,
           this.userId,
+          ticketId,
           turnNumber,
           latestRecord.message_id || "",
           latestRecord.input_tokens || 0,
@@ -475,6 +638,16 @@ class SimpleAnalytics {
         // Update turn cost in state
         this.currentTurn[sessionId].turnCost = latestRecord.total_cost_usd || 0;
         this.saveTurnState();
+
+        // Update ticket cost tracking
+        if (ticket) {
+          ticket.totalTokens += latestRecord.total_tokens || 0;
+          ticket.inputTokens += latestRecord.input_tokens || 0;
+          ticket.outputTokens += latestRecord.output_tokens || 0;
+          ticket.totalCost += latestRecord.total_cost_usd || 0;
+          ticket.lastActivityAt = now;
+          this.saveTicketState();
+        }
       }
     }
 
@@ -485,8 +658,8 @@ class SimpleAnalytics {
         for (const line of costs) {
           if (line.startsWith(sessionId + ",")) {
             const parts = line.split(",");
-            // Column 10 (index 9) is total_cost_usd
-            totalCost += parseFloat(parts[9]) || 0;
+            // Column 11 (index 10) is total_cost_usd (shifted by 1 due to ticket_id)
+            totalCost += parseFloat(parts[10]) || 0;
           }
         }
       } catch (e) {
@@ -496,6 +669,9 @@ class SimpleAnalytics {
 
     // Update or create session record (replace old entry for this session)
     this.updateSessionRecord(sessionId, turnNumber, totalCost, was_interrupted, now);
+
+    // Write ticket summary if ticket exists
+    await this.writeTicketSummary(sessionId);
 
     // DON'T write turn data here - it will be written when the next turn starts
     // DON'T clear turn state here - the session is still active
@@ -514,7 +690,7 @@ class SimpleAnalytics {
       const header =
         sessions.length > 0
           ? sessions[0]
-          : "session_id,user_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns";
+          : "session_id,user_id,ticket_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns";
 
       // Filter out old entry for this session
       const otherSessions = sessions.slice(1).filter((line) => !line.startsWith(sessionId + ","));
@@ -522,10 +698,15 @@ class SimpleAnalytics {
       // Get start time from turn state
       const startTime = this.currentTurn[sessionId]?.startTime || endTime - 300000;
 
+      // Get ticket ID
+      const ticket = this.getCurrentTicket(sessionId);
+      const ticketId = ticket ? ticket.ticketId : '';
+
       // Create new session record
       const sessionData = [
         sessionId,
         this.userId,
+        ticketId,
         this.repoInfo.url,
         this.repoInfo.name,
         this.repoInfo.branch,
@@ -544,6 +725,38 @@ class SimpleAnalytics {
       fs.writeFileSync(this.sessionsFile, allSessions);
     } catch (error) {
       console.error(`Error updating session record: ${error.message}`);
+    }
+  }
+
+  async writeTicketSummary(sessionId) {
+    const ticket = this.getCurrentTicket(sessionId);
+    if (!ticket) return;
+
+    try {
+      const ticketData = [
+        ticket.ticketId,
+        sessionId,
+        this.userId,
+        ticket.storyPoints || '',
+        ticket.ticketType || '',
+        ticket.priority || '',
+        ticket.status || '',
+        ticket.projectKey || '',
+        ticket.startedAt,
+        ticket.lastActivityAt,
+        ticket.totalTurns,
+        ticket.totalTokens,
+        ticket.inputTokens,
+        ticket.outputTokens,
+        ticket.totalCost.toFixed(10),
+        ticket.commitsCount
+      ]
+        .map((v) => this.escapeCSV(v))
+        .join(",");
+
+      this.appendCSV(this.ticketsFile, ticketData);
+    } catch (error) {
+      console.error(`Error writing ticket summary: ${error.message}`);
     }
   }
 
@@ -602,6 +815,18 @@ class SimpleAnalytics {
         const authorEmail = execSync('git log -1 --pretty=format:"%ae"', { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
         const committedAt = execSync('git log -1 --pretty=format:"%ct"', { encoding: "utf8", stdio: ["pipe", "pipe", "ignore"] }).trim();
 
+        // Get ticket ID from session context or commit message
+        const ticket = this.getCurrentTicket(sessionId);
+        let ticketId = ticket ? ticket.ticketId : '';
+
+        // Fallback: parse commit message if no session ticket
+        if (!ticketId && commitMsg) {
+          const match = commitMsg.match(/\b([A-Z]{2,10}-\d+)\b/);
+          if (match) {
+            ticketId = match[1];
+          }
+        }
+
         // Get LOC changes (files, insertions, deletions)
         let filesChanged = 0,
           insertions = 0,
@@ -625,6 +850,7 @@ class SimpleAnalytics {
           commitSha,
           sessionId,
           this.userId,
+          ticketId,
           this.repoInfo.name,
           this.repoInfo.branch,
           commitMsg,
@@ -639,6 +865,12 @@ class SimpleAnalytics {
           .join(",");
 
         this.appendCSV(this.commitsFile, commitData);
+
+        // Update ticket commit count
+        if (ticket) {
+          ticket.commitsCount++;
+          this.saveTicketState();
+        }
       } catch (error) {
         console.error(`Error tracking git commit: ${error.message}`);
       }
