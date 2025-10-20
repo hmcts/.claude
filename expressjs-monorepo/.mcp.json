@@ -10,10 +10,7 @@
       "type": "stdio",
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/mcp/jira/server.js"],
-      "env": {
-        "JIRA_URL": "https://tools.hmcts.net/jira",
-        "JIRA_PERSONAL_TOKEN": "${JIRA_PERSONAL_TOKEN}"
-      }
+      "env": {}
     }
   }
 }
