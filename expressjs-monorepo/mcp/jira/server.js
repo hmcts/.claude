@@ -269,7 +269,8 @@ class MCPServer {
         const message = JSON.parse(line);
 
         // Check if this is a notification (no id means no response expected)
-        if (!message.id) {
+        // Use hasOwnProperty to handle id=0 or id=null correctly
+        if (!('id' in message)) {
           // This is a notification, just log it and don't respond
           console.error(`[JIRA MCP] Received notification: ${message.method}`);
           return;
