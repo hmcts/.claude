@@ -14,11 +14,11 @@ COMMAND=$(echo "$JSON_INPUT" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
 
 # Check if this is a git commit command
 if [[ "$COMMAND" =~ ^git\ commit ]]; then
-    exec "$PROJECT_DIR/.claude/hooks/pre-commit.sh"
+    exec "${CLAUDE_PLUGIN_ROOT}/hooks/pre-commit.sh"
 fi
 
 # Check if this is a PR creation command
 if [[ "$COMMAND" =~ ^gh\ pr\ create ]]; then
-    exec "$PROJECT_DIR/.claude/hooks/pre-pr.sh"
+    exec "${CLAUDE_PLUGIN_ROOT}/hooks/pre-pr.sh"
 fi
 

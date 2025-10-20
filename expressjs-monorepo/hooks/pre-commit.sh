@@ -5,7 +5,8 @@ set -euo pipefail
 
 # Logging function
 log_hook() {
-    local log_file="$PROJECT_DIR/.claude/hooks/run.log"
+    local log_file="$CLAUDE_PROJECT_DIR/.claude/hooks/run.log"
+    mkdir -p "$(dirname "$log_file")"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] PRE-COMMIT: $1" >> "$log_file"
 }
 
