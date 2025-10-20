@@ -44,6 +44,7 @@ THEN EXECUTE IN SEQUENCE:
 
 ACTIONS:
 - Write JIRA ticket content to docs/tickets/$ARGUMENT/ticket.md
+- Check for JIRA attachments with a name like specification, download them and append to the ticket.md
 VERIFY: Branch created, folder exists, ticket documented
 ```
 *Mark "Retrieve JIRA ticket and setup branch" as completed*
