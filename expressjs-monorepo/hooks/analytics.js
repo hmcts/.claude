@@ -333,6 +333,7 @@ class SimpleAnalytics {
 
         // Only set if we don't already have a ticket for this session
         if (!this.currentTicket[sessionId]) {
+          console.log(`[Analytics] Detected ticket from prompt: ${ticketId}`);
           this.setCurrentTicket(sessionId, {
             ticketId: ticketId,
             storyPoints: null,
@@ -341,7 +342,11 @@ class SimpleAnalytics {
             projectKey: ticketId.split('-')[0],
             startedAt: Date.now()
           });
+        } else {
+          console.log(`[Analytics] Ticket already set for session: ${this.currentTicket[sessionId].ticketId}`);
         }
+      } else {
+        console.log('[Analytics] No ticket ID detected in prompt');
       }
     } catch (error) {
       console.error(`Error detecting ticket from prompt: ${error.message}`);
@@ -352,34 +357,57 @@ class SimpleAnalytics {
     try {
       const toolOutput = eventData.tool_output;
 
-      // Parse Jira response
-      if (toolOutput && toolOutput.success && toolOutput.issue) {
-        const issue = toolOutput.issue;
-        const fields = issue.fields;
-
-        // Auto-detect story points from common custom field names
-        const storyPoints = fields.customfield_10016 ||
-                            fields.customfield_10026 ||
-                            fields.customfield_10036 ||
-                            fields.customfield_10106 ||
-                            fields.storyPoints ||
-                            fields['Story Points'] ||
-                            null;
-
-        const ticketData = {
-          ticketId: issue.key,
-          storyPoints: storyPoints,
-          ticketType: fields.issueType?.name || 'Unknown',
-          priority: fields.priority?.name || null,
-          status: fields.status?.name || 'Unknown',
-          projectKey: fields.project?.key || issue.key.split('-')[0],
-          startedAt: Date.now()
-        };
-
-        this.setCurrentTicket(sessionId, ticketData);
+      // Debug: Log what we received
+      if (!toolOutput) {
+        console.warn('[Analytics] Jira ticket fetch: No tool_output in event data');
+        return;
       }
+
+      if (!toolOutput.success) {
+        console.warn('[Analytics] Jira ticket fetch failed:', toolOutput.error || 'Unknown error');
+        return;
+      }
+
+      if (!toolOutput.issue) {
+        console.warn('[Analytics] Jira ticket fetch: No issue in tool_output');
+        return;
+      }
+
+      // Parse Jira response
+      const issue = toolOutput.issue;
+      const fields = issue.fields;
+
+      // Auto-detect story points from common custom field names
+      const storyPoints = fields.customfield_10004 ||  // HMCTS Jira
+                          fields.customfield_10016 ||  // Common in Jira Cloud
+                          fields.customfield_10026 ||
+                          fields.customfield_10036 ||
+                          fields.customfield_10106 ||
+                          fields.storyPoints ||
+                          fields['Story Points'] ||
+                          null;
+
+      // Debug: Warn if we couldn't find story points
+      if (storyPoints === null) {
+        const customFields = Object.keys(fields).filter(k => k.startsWith('customfield_'));
+        console.warn(`[Analytics] Story points not found. Available custom fields: ${customFields.join(', ')}`);
+      }
+
+      const ticketData = {
+        ticketId: issue.key,
+        storyPoints: storyPoints,
+        ticketType: fields.issueType?.name || 'Unknown',
+        priority: fields.priority?.name || null,
+        status: fields.status?.name || 'Unknown',
+        projectKey: fields.project?.key || issue.key.split('-')[0],
+        startedAt: Date.now()
+      };
+
+      console.log(`[Analytics] Captured Jira ticket: ${ticketData.ticketId} (${ticketData.storyPoints} pts, ${ticketData.status})`);
+      this.setCurrentTicket(sessionId, ticketData);
     } catch (error) {
-      console.error(`Error handling Jira ticket fetch: ${error.message}`);
+      console.error(`[Analytics] Error handling Jira ticket fetch: ${error.message}`);
+      console.error(error.stack);
     }
   }
 
