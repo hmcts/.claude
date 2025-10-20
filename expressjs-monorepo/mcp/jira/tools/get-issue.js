@@ -3,7 +3,19 @@
  * Get details of a specific JIRA issue
  */
 
-const DEFAULT_FIELDS = ['summary', 'status', 'description', 'assignee', 'created', 'updated'];
+const DEFAULT_FIELDS = [
+  'summary',
+  'status',
+  'description',
+  'assignee',
+  'created',
+  'updated',
+  'issuetype',      // Needed for analytics: Story/Bug/Task
+  'priority',       // Needed for analytics: High/Medium/Low
+  'project',        // Needed for analytics: project key
+  'customfield_10004',  // HMCTS story points
+  'customfield_10016',  // Common Jira Cloud story points
+];
 
 export async function getIssue(jiraClient, args) {
   const { issue_key, fields = DEFAULT_FIELDS, expand = '' } = args;
