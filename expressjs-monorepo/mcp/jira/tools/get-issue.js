@@ -17,8 +17,23 @@ const DEFAULT_FIELDS = [
   'customfield_10016',  // Common Jira Cloud story points
 ];
 
+// Fields that analytics always needs
+const ANALYTICS_REQUIRED_FIELDS = [
+  'issuetype',
+  'priority',
+  'project',
+  'customfield_10004',  // HMCTS story points
+  'customfield_10016',  // Common Jira Cloud story points
+];
+
 export async function getIssue(jiraClient, args) {
-  const { issue_key, fields = DEFAULT_FIELDS, expand = '' } = args;
+  let { issue_key, fields = DEFAULT_FIELDS, expand = '' } = args;
+
+  // Always merge in analytics-required fields
+  if (fields && Array.isArray(fields)) {
+    const fieldsSet = new Set([...fields, ...ANALYTICS_REQUIRED_FIELDS]);
+    fields = Array.from(fieldsSet);
+  }
 
   if (!issue_key) {
     throw new Error('issue_key is required');
