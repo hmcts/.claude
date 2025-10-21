@@ -211,7 +211,7 @@ class SimpleAnalytics {
     if (!fs.existsSync(this.ticketsFile)) {
       this.appendCSV(
         this.ticketsFile,
-        "ticket_id,session_id,user_id,story_points,ticket_type,priority,status,project_key,started_at,last_activity_at,total_turns,total_tokens,input_tokens,output_tokens,total_cost_usd,commits_count"
+        "ticket_id,session_id,user_id,workflow_command,story_points,ticket_type,priority,status,project_key,started_at,last_activity_at,total_turns,total_tokens,input_tokens,output_tokens,total_cost_usd,commits_count"
       );
     }
   }
@@ -325,6 +325,23 @@ class SimpleAnalytics {
     try {
       const prompt = eventData.prompt || '';
 
+      // Detect workflow command
+      let workflowCommand = null;
+      const workflowCommands = {
+        '/wf-plan': 'plan',
+        '/wf-implement': 'implement',
+        '/wf-review': 'review',
+        '/os-small': 'one-shot-small',
+        '/os-large': 'one-shot-large'
+      };
+
+      for (const [cmd, label] of Object.entries(workflowCommands)) {
+        if (prompt.includes(cmd)) {
+          workflowCommand = label;
+          break;
+        }
+      }
+
       // Match ticket patterns like PROJ-123, ABC-456
       const ticketPattern = /\b([A-Z]{2,10}-\d+)\b/g;
       const matches = prompt.match(ticketPattern);
@@ -334,9 +351,10 @@ class SimpleAnalytics {
 
         // Only set if we don't already have a ticket for this session
         if (!this.currentTicket[sessionId]) {
-          console.log(`[Analytics] Detected ticket from prompt: ${ticketId}`);
+          console.log(`[Analytics] Detected ticket from prompt: ${ticketId}${workflowCommand ? ` (${workflowCommand})` : ''}`);
           this.setCurrentTicket(sessionId, {
             ticketId: ticketId,
+            workflowCommand: workflowCommand,
             storyPoints: null,
             ticketType: 'Unknown',
             status: 'Unknown',
@@ -761,6 +779,7 @@ class SimpleAnalytics {
         ticket.ticketId,
         sessionId,
         this.userId,
+        ticket.workflowCommand || '',
         ticket.storyPoints || '',
         ticket.ticketType || '',
         ticket.priority || '',
