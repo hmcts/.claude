@@ -155,11 +155,11 @@ class SimpleAnalytics {
   }
 
   ensureCSVHeaders() {
-    // Sessions CSV
+    // Sessions CSV (no ticket_id - use jira_tickets.csv to link sessions to tickets)
     if (!fs.existsSync(this.sessionsFile)) {
       this.appendCSV(
         this.sessionsFile,
-        "session_id,user_id,ticket_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns"
+        "session_id,user_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns"
       );
     }
 
@@ -718,7 +718,7 @@ class SimpleAnalytics {
       const header =
         sessions.length > 0
           ? sessions[0]
-          : "session_id,user_id,ticket_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns";
+          : "session_id,user_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns";
 
       // Filter out old entry for this session
       const otherSessions = sessions.slice(1).filter((line) => !line.startsWith(sessionId + ","));
@@ -726,15 +726,10 @@ class SimpleAnalytics {
       // Get start time from turn state
       const startTime = this.currentTurn[sessionId]?.startTime || endTime - 300000;
 
-      // Get ticket ID
-      const ticket = this.getCurrentTicket(sessionId);
-      const ticketId = ticket ? ticket.ticketId : '';
-
-      // Create new session record
+      // Create new session record (no ticket_id - use jira_tickets.csv to link)
       const sessionData = [
         sessionId,
         this.userId,
-        ticketId,
         this.repoInfo.url,
         this.repoInfo.name,
         this.repoInfo.branch,
