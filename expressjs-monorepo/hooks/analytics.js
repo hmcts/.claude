@@ -417,12 +417,22 @@ class SimpleAnalytics {
       const debugLog = path.join(this.dataDir, "debug.log");
       fs.appendFileSync(debugLog, `[${new Date().toISOString()}] handleJiraTicketFetch - eventData keys: ${Object.keys(eventData).join(', ')}\n`);
 
+      // Debug: Log raw tool_response
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response type: ${typeof eventData.tool_response}\n`);
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response is array: ${Array.isArray(eventData.tool_response)}\n`);
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response raw (first 500 chars): ${JSON.stringify(eventData.tool_response).substring(0, 500)}\n`);
+
       // tool_response might be a string, need to parse it
       let toolOutput;
       if (eventData.tool_response) {
-        toolOutput = typeof eventData.tool_response === 'string'
-          ? JSON.parse(eventData.tool_response)
-          : eventData.tool_response;
+        // If it's an array, take the first element
+        if (Array.isArray(eventData.tool_response)) {
+          toolOutput = eventData.tool_response[0];
+        } else if (typeof eventData.tool_response === 'string') {
+          toolOutput = JSON.parse(eventData.tool_response);
+        } else {
+          toolOutput = eventData.tool_response;
+        }
       }
 
       // Debug: Log what we received
