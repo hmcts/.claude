@@ -354,18 +354,19 @@ class SimpleAnalytics {
       const debugLog = path.join(this.dataDir, "debug.log");
       fs.appendFileSync(debugLog, `[${new Date().toISOString()}] detectTicketFromPrompt - prompt (first 200 chars): "${prompt.substring(0, 200)}"\n`);
 
-      // Detect workflow command
+      // Detect workflow command (handle both /wf-plan and /plugin:wf-plan formats)
       let workflowCommand = null;
       const workflowCommands = {
-        '/wf-plan': 'plan',
-        '/wf-implement': 'implement',
-        '/wf-review': 'review',
-        '/os-small': 'one-shot-small',
-        '/os-large': 'one-shot-large'
+        'wf-plan': 'plan',
+        'wf-implement': 'implement',
+        'wf-review': 'review',
+        'os-small': 'one-shot-small',
+        'os-large': 'one-shot-large'
       };
 
       for (const [cmd, label] of Object.entries(workflowCommands)) {
-        if (prompt.includes(cmd)) {
+        // Match /wf-plan, /expressjs-monorepo:wf-plan, or any plugin prefix
+        if (prompt.includes(`/${cmd}`) || prompt.includes(`:${cmd}`)) {
           workflowCommand = label;
           fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Detected workflow command: ${cmd} -> ${label}\n`);
           break;
