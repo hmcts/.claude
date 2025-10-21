@@ -1,12 +1,16 @@
   #!/bin/bash
   # Post-write hook - runs after file modifications to ensure code quality
 
-  set -euo pipefail
-  cd "$CLAUDE_PROJECT_DIR"
+  set -eo pipefail
+
+  # Get project directory from environment or use current directory
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+  cd "$PROJECT_DIR"
 
   # Logging function
   log_hook() {
-      local log_file="$CLAUDE_PROJECT_DIR/.claude/hooks/run.log"
+      local log_file="$PROJECT_DIR/.claude/hooks/run.log"
+      mkdir -p "$(dirname "$log_file")"
       echo "[$(date '+%Y-%m-%d %H:%M:%S')] POST-WRITE: $1" >> "$log_file"
   }
 
@@ -14,7 +18,7 @@
   echo "🔧 Running post-write checks..."
 
   # Initialize quality check CSV
-  QUALITY_CSV="$CLAUDE_PROJECT_DIR/.claude/hooks/analytics_data/quality_checks.csv"
+  QUALITY_CSV="$PROJECT_DIR/.claude/hooks/analytics_data/quality_checks.csv"
   TIMESTAMP=$(date +%s%3N)
 
   # Get session ID from environment or use 'unknown'

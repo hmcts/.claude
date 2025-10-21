@@ -1,11 +1,14 @@
 #!/bin/bash
 # Pre-commit hook - runs linting, formatting, and tests before committing
 
-set -euo pipefail
+set -eo pipefail
+
+# Get project directory from environment or use current directory
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
 # Logging function
 log_hook() {
-    local log_file="$CLAUDE_PROJECT_DIR/.claude/hooks/run.log"
+    local log_file="$PROJECT_DIR/.claude/hooks/run.log"
     mkdir -p "$(dirname "$log_file")"
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] PRE-COMMIT: $1" >> "$log_file"
 }
