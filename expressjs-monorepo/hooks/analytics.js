@@ -115,16 +115,30 @@ class SimpleAnalytics {
   }
 
   setCurrentTicket(sessionId, ticketData) {
-    if (!this.currentTicket[sessionId]) {
-      // Initialize new ticket tracking
+    const existingTicket = this.currentTicket[sessionId];
+    const newWorkflowCommand = ticketData.workflowCommand;
+
+    // Check if this is a NEW workflow command (switching from plan -> implement, etc.)
+    const isNewWorkflowPhase = existingTicket &&
+                                existingTicket.workflowCommand &&
+                                newWorkflowCommand &&
+                                existingTicket.workflowCommand !== newWorkflowCommand;
+
+    if (!existingTicket || isNewWorkflowPhase) {
+      // Initialize new ticket tracking OR start new workflow phase
+      if (isNewWorkflowPhase) {
+        console.log(`[Analytics] Switching workflow: ${existingTicket.workflowCommand} -> ${newWorkflowCommand}`);
+      }
+
       this.currentTicket[sessionId] = {
         ticketId: ticketData.ticketId,
-        storyPoints: ticketData.storyPoints || null,
-        ticketType: ticketData.ticketType || 'Unknown',
-        priority: ticketData.priority || null,
-        status: ticketData.status || 'Unknown',
-        projectKey: ticketData.projectKey || '',
-        startedAt: ticketData.startedAt || Date.now(),
+        workflowCommand: newWorkflowCommand || null,
+        storyPoints: ticketData.storyPoints || (existingTicket?.storyPoints) || null,
+        ticketType: ticketData.ticketType || (existingTicket?.ticketType) || 'Unknown',
+        priority: ticketData.priority || (existingTicket?.priority) || null,
+        status: ticketData.status || (existingTicket?.status) || 'Unknown',
+        projectKey: ticketData.projectKey || (existingTicket?.projectKey) || '',
+        startedAt: Date.now(),
         lastActivityAt: Date.now(),
         totalTurns: 0,
         totalTokens: 0,
@@ -135,9 +149,11 @@ class SimpleAnalytics {
       };
     } else {
       // Update existing ticket with new data (e.g., story points from Jira)
+      // Preserve workflowCommand if it's already set (don't overwrite with null)
       this.currentTicket[sessionId] = {
         ...this.currentTicket[sessionId],
         ticketId: ticketData.ticketId || this.currentTicket[sessionId].ticketId,
+        workflowCommand: this.currentTicket[sessionId].workflowCommand || ticketData.workflowCommand,
         storyPoints: ticketData.storyPoints || this.currentTicket[sessionId].storyPoints,
         ticketType: ticketData.ticketType || this.currentTicket[sessionId].ticketType,
         priority: ticketData.priority || this.currentTicket[sessionId].priority,
@@ -357,9 +373,13 @@ class SimpleAnalytics {
 
       if (matches && matches.length > 0) {
         const ticketId = matches[0];
+        const existingTicket = this.currentTicket[sessionId];
 
-        // Only set if we don't already have a ticket for this session
-        if (!this.currentTicket[sessionId]) {
+        // Set ticket if: (1) no existing ticket, OR (2) new workflow command detected
+        const shouldSetTicket = !existingTicket ||
+                                (workflowCommand && existingTicket.workflowCommand !== workflowCommand);
+
+        if (shouldSetTicket) {
           console.log(`[Analytics] Detected ticket from prompt: ${ticketId}${workflowCommand ? ` (${workflowCommand})` : ''}`);
           this.setCurrentTicket(sessionId, {
             ticketId: ticketId,
@@ -370,8 +390,18 @@ class SimpleAnalytics {
             projectKey: ticketId.split('-')[0],
             startedAt: Date.now()
           });
-        } else {
-          console.log(`[Analytics] Ticket already set for session: ${this.currentTicket[sessionId].ticketId}`);
+        } else if (existingTicket && existingTicket.ticketId !== ticketId) {
+          // Different ticket in same session - set new ticket
+          console.log(`[Analytics] Switching from ${existingTicket.ticketId} to ${ticketId}`);
+          this.setCurrentTicket(sessionId, {
+            ticketId: ticketId,
+            workflowCommand: workflowCommand,
+            storyPoints: null,
+            ticketType: 'Unknown',
+            status: 'Unknown',
+            projectKey: ticketId.split('-')[0],
+            startedAt: Date.now()
+          });
         }
       } else {
         console.log('[Analytics] No ticket ID detected in prompt');
@@ -383,10 +413,15 @@ class SimpleAnalytics {
 
   async handleJiraTicketFetch(sessionId, eventData) {
     try {
+      // Debug: Log what's in eventData
+      const debugLog = path.join(this.dataDir, "debug.log");
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] handleJiraTicketFetch - eventData keys: ${Object.keys(eventData).join(', ')}\n`);
+
       const toolOutput = eventData.tool_output;
 
       // Debug: Log what we received
       if (!toolOutput) {
+        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No tool_output in event data!\n`);
         console.warn('[Analytics] Jira ticket fetch: No tool_output in event data');
         return;
       }
@@ -726,8 +761,8 @@ class SimpleAnalytics {
     // Update or create session record (replace old entry for this session)
     this.updateSessionRecord(sessionId, turnNumber, totalCost, was_interrupted, now);
 
-    // Write ticket summary if ticket exists
-    await this.writeTicketSummary(sessionId);
+    // Update ticket summary if ticket exists (updates existing row or appends new)
+    await this.updateTicketSummary(sessionId);
 
     // DON'T write turn data here - it will be written when the next turn starts
     // DON'T clear turn state here - the session is still active
@@ -779,11 +814,19 @@ class SimpleAnalytics {
     }
   }
 
-  async writeTicketSummary(sessionId) {
+  async updateTicketSummary(sessionId) {
     const ticket = this.getCurrentTicket(sessionId);
     if (!ticket) return;
 
     try {
+      // Read existing tickets
+      let tickets = [];
+      if (fs.existsSync(this.ticketsFile)) {
+        const content = fs.readFileSync(this.ticketsFile, "utf8");
+        tickets = content.split("\n").filter((line) => line.trim());
+      }
+
+      // Prepare new ticket data
       const ticketData = [
         ticket.ticketId,
         sessionId,
@@ -806,9 +849,34 @@ class SimpleAnalytics {
         .map((v) => this.escapeCSV(v))
         .join(",");
 
-      this.appendCSV(this.ticketsFile, ticketData);
+      // Find matching row by ticket_id + session_id + workflow_command
+      const header = tickets[0];
+      const dataRows = tickets.slice(1);
+
+      const matchIndex = dataRows.findIndex((row) => {
+        const cols = row.split(',');
+        const rowTicketId = cols[0]?.replace(/^"|"$/g, ''); // Remove quotes
+        const rowSessionId = cols[1]?.replace(/^"|"$/g, '');
+        const rowWorkflowCmd = cols[3]?.replace(/^"|"$/g, '');
+
+        return rowTicketId === ticket.ticketId &&
+               rowSessionId === sessionId &&
+               rowWorkflowCmd === (ticket.workflowCommand || '');
+      });
+
+      if (matchIndex >= 0) {
+        // Update existing row
+        dataRows[matchIndex] = ticketData;
+      } else {
+        // Append new row
+        dataRows.push(ticketData);
+      }
+
+      // Write back all tickets
+      const allTickets = [header, ...dataRows].join("\n") + "\n";
+      fs.writeFileSync(this.ticketsFile, allTickets);
     } catch (error) {
-      console.error(`Error writing ticket summary: ${error.message}`);
+      console.error(`Error updating ticket summary: ${error.message}`);
     }
   }
 
