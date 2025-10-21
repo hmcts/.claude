@@ -417,24 +417,34 @@ class SimpleAnalytics {
       const debugLog = path.join(this.dataDir, "debug.log");
       fs.appendFileSync(debugLog, `[${new Date().toISOString()}] handleJiraTicketFetch - eventData keys: ${Object.keys(eventData).join(', ')}\n`);
 
-      const toolOutput = eventData.tool_output;
+      // tool_response might be a string, need to parse it
+      let toolOutput;
+      if (eventData.tool_response) {
+        toolOutput = typeof eventData.tool_response === 'string'
+          ? JSON.parse(eventData.tool_response)
+          : eventData.tool_response;
+      }
 
       // Debug: Log what we received
       if (!toolOutput) {
-        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No tool_output in event data!\n`);
-        console.warn('[Analytics] Jira ticket fetch: No tool_output in event data');
+        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No tool_response in event data!\n`);
+        console.warn('[Analytics] Jira ticket fetch: No tool_response in event data');
         return;
       }
 
       if (!toolOutput.success) {
+        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Jira fetch failed: ${toolOutput.error || 'Unknown'}\n`);
         console.warn('[Analytics] Jira ticket fetch failed:', toolOutput.error || 'Unknown error');
         return;
       }
 
       if (!toolOutput.issue) {
-        console.warn('[Analytics] Jira ticket fetch: No issue in tool_output');
+        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No issue in tool_response\n`);
+        console.warn('[Analytics] Jira ticket fetch: No issue in tool_response');
         return;
       }
+
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Successfully parsed Jira issue: ${toolOutput.issue.key}\n`);
 
       // Parse Jira response
       const issue = toolOutput.issue;
