@@ -269,13 +269,6 @@ class SimpleAnalytics {
     try {
       const { hook_event_name, tool_name, session_id, user_id } = eventData;
 
-      // Debug logging to file
-      if (hook_event_name === "PostToolUse") {
-        const debugLog = path.join(this.dataDir, "debug.log");
-        const debugMsg = `[${new Date().toISOString()}] PostToolUse - tool_name: "${tool_name}", has_tool_output: ${!!eventData.tool_output}\n`;
-        fs.appendFileSync(debugLog, debugMsg);
-      }
-
       if (hook_event_name === "UserPromptSubmit") {
         await this.handleTurnStart(session_id, eventData);
         await this.detectTicketFromPrompt(session_id, eventData);
@@ -287,8 +280,6 @@ class SimpleAnalytics {
         // Capture Jira ticket data
         // Tool name might be prefixed with plugin name (e.g., "plugin:expressjs-monorepo:jira - jira_get_issue")
         if (tool_name && (tool_name === "jira_get_issue" || tool_name.includes("jira_get_issue"))) {
-          const debugLog = path.join(this.dataDir, "debug.log");
-          fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Calling handleJiraTicketFetch!\n`);
           await this.handleJiraTicketFetch(session_id, eventData);
         }
       } else if (hook_event_name === "PreCompact") {
@@ -350,10 +341,6 @@ class SimpleAnalytics {
     try {
       const prompt = eventData.prompt || '';
 
-      // Debug: Log prompt to see what we're receiving
-      const debugLog = path.join(this.dataDir, "debug.log");
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] detectTicketFromPrompt - prompt (first 200 chars): "${prompt.substring(0, 200)}"\n`);
-
       // Detect workflow command (handle both /wf-plan and /plugin:wf-plan formats)
       let workflowCommand = null;
       const workflowCommands = {
@@ -368,13 +355,8 @@ class SimpleAnalytics {
         // Match /wf-plan, /expressjs-monorepo:wf-plan, or any plugin prefix
         if (prompt.includes(`/${cmd}`) || prompt.includes(`:${cmd}`)) {
           workflowCommand = label;
-          fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Detected workflow command: ${cmd} -> ${label}\n`);
           break;
         }
-      }
-
-      if (!workflowCommand) {
-        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No workflow command detected in prompt\n`);
       }
 
       // Match ticket patterns like PROJ-123, ABC-456
@@ -423,15 +405,6 @@ class SimpleAnalytics {
 
   async handleJiraTicketFetch(sessionId, eventData) {
     try {
-      // Debug: Log what's in eventData
-      const debugLog = path.join(this.dataDir, "debug.log");
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] handleJiraTicketFetch - eventData keys: ${Object.keys(eventData).join(', ')}\n`);
-
-      // Debug: Log raw tool_response
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response type: ${typeof eventData.tool_response}\n`);
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response is array: ${Array.isArray(eventData.tool_response)}\n`);
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response raw (first 500 chars): ${JSON.stringify(eventData.tool_response).substring(0, 500)}\n`);
-
       // tool_response format: [{type: "text", text: "{json}"}]
       let toolOutput;
       if (eventData.tool_response) {
@@ -448,30 +421,20 @@ class SimpleAnalytics {
         }
       }
 
-      // Debug: Log what we received
       if (!toolOutput) {
-        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No tool_response in event data!\n`);
         console.warn('[Analytics] Jira ticket fetch: No tool_response in event data');
         return;
       }
 
-      // Debug: Log tool_response structure
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response keys: ${Object.keys(toolOutput).join(', ')}\n`);
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response.success: ${toolOutput.success}\n`);
-
       if (!toolOutput.success) {
-        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Jira fetch failed: ${toolOutput.error || 'Unknown'}\n`);
         console.warn('[Analytics] Jira ticket fetch failed:', toolOutput.error || 'Unknown error');
         return;
       }
 
       if (!toolOutput.issue) {
-        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No issue in tool_response\n`);
         console.warn('[Analytics] Jira ticket fetch: No issue in tool_response');
         return;
       }
-
-      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Successfully parsed Jira issue: ${toolOutput.issue.key}\n`);
 
       // Parse Jira response
       const issue = toolOutput.issue;
@@ -486,12 +449,6 @@ class SimpleAnalytics {
                           fields.storyPoints ||
                           fields['Story Points'] ||
                           null;
-
-      // Debug: Warn if we couldn't find story points
-      if (storyPoints === null) {
-        const customFields = Object.keys(fields).filter(k => k.startsWith('customfield_'));
-        console.warn(`[Analytics] Story points not found. Available custom fields: ${customFields.join(', ')}`);
-      }
 
       const ticketData = {
         ticketId: issue.key,
