@@ -432,6 +432,10 @@ class SimpleAnalytics {
         return;
       }
 
+      // Debug: Log tool_response structure
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response keys: ${Object.keys(toolOutput).join(', ')}\n`);
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] tool_response.success: ${toolOutput.success}\n`);
+
       if (!toolOutput.success) {
         fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Jira fetch failed: ${toolOutput.error || 'Unknown'}\n`);
         console.warn('[Analytics] Jira ticket fetch failed:', toolOutput.error || 'Unknown error');
