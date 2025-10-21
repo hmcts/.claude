@@ -350,6 +350,10 @@ class SimpleAnalytics {
     try {
       const prompt = eventData.prompt || '';
 
+      // Debug: Log prompt to see what we're receiving
+      const debugLog = path.join(this.dataDir, "debug.log");
+      fs.appendFileSync(debugLog, `[${new Date().toISOString()}] detectTicketFromPrompt - prompt (first 200 chars): "${prompt.substring(0, 200)}"\n`);
+
       // Detect workflow command
       let workflowCommand = null;
       const workflowCommands = {
@@ -363,8 +367,13 @@ class SimpleAnalytics {
       for (const [cmd, label] of Object.entries(workflowCommands)) {
         if (prompt.includes(cmd)) {
           workflowCommand = label;
+          fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Detected workflow command: ${cmd} -> ${label}\n`);
           break;
         }
+      }
+
+      if (!workflowCommand) {
+        fs.appendFileSync(debugLog, `[${new Date().toISOString()}] No workflow command detected in prompt\n`);
       }
 
       // Match ticket patterns like PROJ-123, ABC-456
