@@ -262,7 +262,8 @@ class SimpleAnalytics {
         await this.handleToolEnd(session_id, tool_name, eventData);
 
         // Capture Jira ticket data
-        if (tool_name === "jira_get_issue") {
+        // Tool name might be prefixed with plugin name (e.g., "plugin:expressjs-monorepo:jira - jira_get_issue")
+        if (tool_name && (tool_name === "jira_get_issue" || tool_name.includes("jira_get_issue"))) {
           await this.handleJiraTicketFetch(session_id, eventData);
         }
       } else if (hook_event_name === "PreCompact") {
