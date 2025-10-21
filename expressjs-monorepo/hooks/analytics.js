@@ -253,6 +253,13 @@ class SimpleAnalytics {
     try {
       const { hook_event_name, tool_name, session_id, user_id } = eventData;
 
+      // Debug logging to file
+      if (hook_event_name === "PostToolUse") {
+        const debugLog = path.join(this.dataDir, "debug.log");
+        const debugMsg = `[${new Date().toISOString()}] PostToolUse - tool_name: "${tool_name}", has_tool_output: ${!!eventData.tool_output}\n`;
+        fs.appendFileSync(debugLog, debugMsg);
+      }
+
       if (hook_event_name === "UserPromptSubmit") {
         await this.handleTurnStart(session_id, eventData);
         await this.detectTicketFromPrompt(session_id, eventData);
@@ -264,6 +271,8 @@ class SimpleAnalytics {
         // Capture Jira ticket data
         // Tool name might be prefixed with plugin name (e.g., "plugin:expressjs-monorepo:jira - jira_get_issue")
         if (tool_name && (tool_name === "jira_get_issue" || tool_name.includes("jira_get_issue"))) {
+          const debugLog = path.join(this.dataDir, "debug.log");
+          fs.appendFileSync(debugLog, `[${new Date().toISOString()}] Calling handleJiraTicketFetch!\n`);
           await this.handleJiraTicketFetch(session_id, eventData);
         }
       } else if (hook_event_name === "PreCompact") {
