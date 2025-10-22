@@ -3,10 +3,36 @@
  * Get details of a specific JIRA issue
  */
 
-const DEFAULT_FIELDS = ['summary', 'status', 'description', 'assignee', 'created', 'updated'];
+const DEFAULT_FIELDS = [
+  'summary',
+  'status',
+  'description',
+  'assignee',
+  'created',
+  'updated',
+  'issuetype',      // Needed for analytics: Story/Bug/Task
+  'priority',       // Needed for analytics: High/Medium/Low
+  'project',        // Needed for analytics: project key
+  'customfield_10004',  // HMCTS story points
+  'customfield_10016',  // Common Jira Cloud story points
+];
+
+// Fields that analytics always needs
+const ANALYTICS_REQUIRED_FIELDS = [
+  'issuetype',
+  'priority',
+  'project',
+  'customfield_10004',  // HMCTS story points
+  'customfield_10016',  // Common Jira Cloud story points
+];
 
 export async function getIssue(jiraClient, args) {
   const { issue_key, fields = DEFAULT_FIELDS, expand = '' } = args;
+
+  // Always merge in analytics-required fields
+  const mergedFields = fields && Array.isArray(fields)
+    ? Array.from(new Set([...fields, ...ANALYTICS_REQUIRED_FIELDS]))
+    : fields;
 
   if (!issue_key) {
     throw new Error('issue_key is required');
@@ -14,7 +40,7 @@ export async function getIssue(jiraClient, args) {
 
   try {
     const issue = await jiraClient.getIssue(issue_key, {
-      fields,
+      fields: mergedFields,
       expand
     });
 

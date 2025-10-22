@@ -1,4 +1,4 @@
-  {
+{
     "hooks": {
       "UserPromptSubmit": [
         {
@@ -6,7 +6,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.js"
             }
           ]
         }
@@ -26,7 +26,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.js"
             }
           ]
         }
@@ -46,7 +46,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.js"
             }
           ]
         }
@@ -57,7 +57,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.js"
             }
           ]
         }
@@ -68,7 +68,7 @@
           "hooks": [
             {
               "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.sh"
+              "command": "${CLAUDE_PLUGIN_ROOT}/hooks/analytics.js"
             }
           ]
         }
