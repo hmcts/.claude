@@ -27,13 +27,12 @@ const ANALYTICS_REQUIRED_FIELDS = [
 ];
 
 export async function getIssue(jiraClient, args) {
-  let { issue_key, fields = DEFAULT_FIELDS, expand = '' } = args;
+  const { issue_key, fields = DEFAULT_FIELDS, expand = '' } = args;
 
   // Always merge in analytics-required fields
-  if (fields && Array.isArray(fields)) {
-    const fieldsSet = new Set([...fields, ...ANALYTICS_REQUIRED_FIELDS]);
-    fields = Array.from(fieldsSet);
-  }
+  const mergedFields = fields && Array.isArray(fields)
+    ? Array.from(new Set([...fields, ...ANALYTICS_REQUIRED_FIELDS]))
+    : fields;
 
   if (!issue_key) {
     throw new Error('issue_key is required');
@@ -41,7 +40,7 @@ export async function getIssue(jiraClient, args) {
 
   try {
     const issue = await jiraClient.getIssue(issue_key, {
-      fields,
+      fields: mergedFields,
       expand
     });
 
