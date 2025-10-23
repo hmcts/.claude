@@ -741,25 +741,72 @@ class SimpleAnalytics {
   }
 }
 
+// Log EPIPE errors for debugging
+function logEPIPE(context, error) {
+  try {
+    const projectDir = process.cwd();
+    const logFile = path.join(projectDir, ".claude", "analytics", "epipe_errors.log");
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] EPIPE Error - Context: ${context}\nError: ${error.message}\nCode: ${error.code}\nStack: ${error.stack}\n---\n`;
+    fs.appendFileSync(logFile, logEntry);
+  } catch (e) {
+    // Silently fail if we can't write the log
+  }
+}
+
 // Main execution
 if (require.main === module) {
-  const analytics = new SimpleAnalytics();
+  let analytics;
 
-  // Read JSON from stdin
-  let inputData = "";
-  process.stdin.on("data", (chunk) => {
-    inputData += chunk;
-  });
-
-  process.stdin.on("end", async () => {
-    try {
-      if (inputData.trim()) {
-        const eventData = JSON.parse(inputData);
-        await analytics.processHookEvent(eventData);
-      }
-    } catch (error) {
-      console.error("Error processing input:", error.message);
+  try {
+    analytics = new SimpleAnalytics();
+  } catch (error) {
+    // Consume stdin even if initialization fails to prevent EPIPE
+    process.stdin.resume();
+    process.stdin.on("end", () => {
+      console.error("Failed to initialize analytics:", error.message);
       process.exit(1);
-    }
-  });
+    });
+    // Don't proceed further
+  }
+
+  if (analytics) {
+    // Read JSON from stdin
+    let inputData = "";
+    process.stdin.on("data", (chunk) => {
+      inputData += chunk;
+    });
+
+    process.stdin.on("end", async () => {
+      try {
+        if (inputData.trim()) {
+          const eventData = JSON.parse(inputData);
+          await analytics.processHookEvent(eventData);
+        }
+        // Explicitly exit with success after async work completes
+        process.exit(0);
+      } catch (error) {
+        console.error("Error processing input:", error.message);
+        process.exit(1);
+      }
+    });
+
+    // Capture EPIPE errors on stdin
+    process.stdin.on("error", (error) => {
+      if (error.code === "EPIPE") {
+        logEPIPE("stdin stream", error);
+      }
+      console.error("Stdin error:", error.message);
+      process.exit(1);
+    });
+
+    // Capture any unhandled EPIPE errors
+    process.on("uncaughtException", (error) => {
+      if (error.code === "EPIPE" || error.message.includes("EPIPE")) {
+        logEPIPE("uncaught exception", error);
+      }
+      console.error("Uncaught error:", error.message);
+      process.exit(1);
+    });
+  }
 }
