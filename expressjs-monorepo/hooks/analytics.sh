@@ -93,6 +93,20 @@ function sleep(ms) {
 }
 
 /**
+ * Log debug messages to file
+ */
+async function logDebug(dataDir, message) {
+  try {
+    const logFile = path.join(dataDir, "analytics_debug.log");
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${message}\n`;
+    await fs.appendFile(logFile, logEntry);
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+/**
  * Log EPIPE errors for debugging
  */
 async function logEPIPE(dataDir, context, error) {
@@ -285,12 +299,20 @@ class SimpleAnalytics {
   async loadTurnState(sessionId) {
     try {
       const stateFile = this.getSessionStateFile(sessionId);
+      await logDebug(this.dataDir, `Loading state from: ${stateFile}`);
       if (await fileExists(stateFile)) {
         const stateData = await fs.readFile(stateFile, "utf8");
-        this.currentTurn[sessionId] = JSON.parse(stateData);
+        const state = JSON.parse(stateData);
+        this.currentTurn[sessionId] = state.currentTurn;
+        this.toolStartData[sessionId] = state.toolStartData || {};
+        this.toolCounter[sessionId] = state.toolCounter || 0;
+        await logDebug(this.dataDir, `Loaded state, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}`);
+      } else {
+        await logDebug(this.dataDir, `State file doesn't exist`);
       }
     } catch (error) {
       console.error(`Error loading turn state for ${sessionId}: ${error.message}`);
+      await logDebug(this.dataDir, `Load error: ${error.message}`);
     }
   }
 
@@ -301,10 +323,20 @@ class SimpleAnalytics {
     try {
       if (this.currentTurn[sessionId]) {
         const stateFile = this.getSessionStateFile(sessionId);
-        await fs.writeFile(stateFile, JSON.stringify(this.currentTurn[sessionId], null, 2));
+        const state = {
+          currentTurn: this.currentTurn[sessionId],
+          toolStartData: this.toolStartData[sessionId] || {},
+          toolCounter: this.toolCounter[sessionId] || 0
+        };
+        const stateData = JSON.stringify(state, null, 2);
+        await fs.writeFile(stateFile, stateData);
+        await logDebug(this.dataDir, `Saved state: ${stateFile}, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}`);
+      } else {
+        await logDebug(this.dataDir, `No state to save for session: ${sessionId}`);
       }
     } catch (error) {
       console.error(`Error saving turn state for ${sessionId}: ${error.message}`);
+      await logDebug(this.dataDir, `Save error: ${error.message}`);
     }
   }
 
@@ -330,11 +362,15 @@ class SimpleAnalytics {
     const validation = validateEventData(eventData);
     if (!validation.valid) {
       console.error(`[Analytics Error] Invalid event data: ${validation.error}`);
+      await logDebug(this.dataDir, `Invalid event: ${validation.error}`);
       return;
     }
 
     try {
       const { hook_event_name, tool_name, session_id } = eventData;
+
+      // Debug logging
+      await logDebug(this.dataDir, `Event: ${hook_event_name}, SessionID: ${session_id}, Tool: ${tool_name || 'N/A'}`);
 
       if (hook_event_name === "UserPromptSubmit") {
         await this.handleTurnStart(session_id, eventData);
@@ -350,6 +386,7 @@ class SimpleAnalytics {
     } catch (error) {
       console.error(`[Analytics Error] Failed to process ${eventData.hook_event_name}: ${error.message}`);
       console.error(error.stack);
+      await logDebug(this.dataDir, `ERROR: ${error.message}\n${error.stack}`);
     }
   }
 
@@ -511,7 +548,15 @@ class SimpleAnalytics {
    */
   async handleToolStart(sessionId, toolName, eventData) {
     const now = Date.now();
+
+    // Load state for this session if not already loaded
+    if (!this.currentTurn[sessionId]) {
+      await this.loadTurnState(sessionId);
+    }
+
     const turnNumber = this.getCurrentTurnNumber(sessionId);
+
+    await logDebug(this.dataDir, `ToolStart: ${toolName}, turn: ${turnNumber}`);
 
     // Increment tool count
     if (this.currentTurn[sessionId]) {
@@ -532,9 +577,11 @@ class SimpleAnalytics {
       inputSize: JSON.stringify(eventData.tool_input || {}).length,
     };
 
-    // Handle git commands
+    // Save state with tool tracking data
+    await this.saveTurnState(sessionId);
+
+    // Handle git operations (tracked in PreToolUse since we just need the command)
     if (toolName === "Bash" && eventData.tool_input?.command) {
-      await this.handleGitCommand(sessionId, eventData.tool_input.command);
       await this.handleGitOperations(sessionId, eventData.tool_input.command);
     }
   }
@@ -546,6 +593,13 @@ class SimpleAnalytics {
     const now = Date.now();
     const { tool_output, success = true } = eventData;
 
+    // Load state for this session if not already loaded
+    if (!this.currentTurn[sessionId]) {
+      await this.loadTurnState(sessionId);
+    }
+
+    await logDebug(this.dataDir, `ToolEnd: ${toolName}`);
+
     // Find the most recent matching tool start data
     const matchingKey = this.toolStartData[sessionId]
       ? Object.keys(this.toolStartData[sessionId])
@@ -555,6 +609,7 @@ class SimpleAnalytics {
 
     if (!matchingKey) {
       console.error(`[Analytics Warning] No matching tool start found for tool: ${toolName}, session: ${sessionId}. Tool completion data dropped.`);
+      await logDebug(this.dataDir, `ToolEnd WARNING: No matching start for ${toolName}`);
       return;
     }
 
@@ -580,6 +635,18 @@ class SimpleAnalytics {
 
     // Clean up the stored start data
     delete this.toolStartData[sessionId][matchingKey];
+
+    // Handle git commits (tracked in PostToolUse so commit has completed)
+    if (toolName === "Bash" && startData.inputSize) {
+      // Get original command from tool input via eventData
+      const command = eventData.tool_input?.command || "";
+      if (command) {
+        await this.handleGitCommand(sessionId, command);
+      }
+    }
+
+    // Save state to persist the cleanup
+    await this.saveTurnState(sessionId);
   }
 
   /**
@@ -619,13 +686,24 @@ class SimpleAnalytics {
   async handleSessionEnd(sessionId, eventData) {
     const now = Date.now();
     const { transcript_path, was_interrupted } = eventData;
+
+    // Load state for this session if not already loaded
+    if (!this.currentTurn[sessionId]) {
+      await this.loadTurnState(sessionId);
+    }
+
     const turnNumber = this.getCurrentTurnNumber(sessionId);
+
+    await logDebug(this.dataDir, `SessionEnd: transcript_path=${transcript_path}, turnNumber=${turnNumber}`);
+    await logDebug(this.dataDir, `SessionEnd: has transcript=${!!transcript_path}, has currentTurn=${!!this.currentTurn[sessionId]}`);
 
     let totalCost = 0;
 
     // Parse transcript for token usage
     if (transcript_path && this.currentTurn[sessionId]) {
+      await logDebug(this.dataDir, `About to parse transcript...`);
       const tokenRecords = await this.parseTranscriptTokens(transcript_path);
+      await logDebug(this.dataDir, `Parsed ${tokenRecords.length} token records from transcript`);
 
       if (tokenRecords.length > 0) {
         const latestRecord = tokenRecords[tokenRecords.length - 1];
@@ -670,15 +748,9 @@ class SimpleAnalytics {
     delete this.toolStartData[sessionId];
     delete this.toolCounter[sessionId];
 
-    // Delete the per-session state file
-    try {
-      const stateFile = this.getSessionStateFile(sessionId);
-      if (await fileExists(stateFile)) {
-        await fs.unlink(stateFile);
-      }
-    } catch (error) {
-      console.error(`Error cleaning up state file for ${sessionId}: ${error.message}`);
-    }
+    // NOTE: We do NOT delete the state file here because Stop fires after each turn,
+    // not just at the end of the session. State files persist across turns and will
+    // be naturally cleaned up when sessions expire or manually by the user.
   }
 
 
