@@ -225,6 +225,7 @@ class SimpleAnalytics {
    * Initialize analytics (async initialization)
    */
   async initialize() {
+    await logDebug(this.dataDir, "⚡ ANALYTICS REFACTOR VERSION - YOU SHOULD SEE THIS IF USING LATEST VERSION");
     this.userId = await this.getUserId();
     this.repoInfo = await this.getRepoInfo();
     await this.ensureDataDirectory();
