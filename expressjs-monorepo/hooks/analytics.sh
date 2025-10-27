@@ -341,17 +341,110 @@ class SimpleAnalytics {
   }
 
   /**
-   * Ensure all CSV files have headers
+   * Ensure all CSV files have headers and migrate if schema changed
    */
   async ensureCSVHeaders() {
     const tasks = Object.entries(CONFIG.CSV_HEADERS).map(async ([key, header]) => {
       const filePath = this.files[key];
       if (!(await fileExists(filePath))) {
         await appendCSV(filePath, header);
+      } else {
+        // Check if existing header matches expected header
+        await this.migrateCSVIfNeeded(filePath, header);
       }
     });
 
     await Promise.all(tasks);
+  }
+
+  /**
+   * Migrate CSV file if header schema has changed
+   */
+  async migrateCSVIfNeeded(filePath, expectedHeader) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      const lines = content.split("\n").filter(line => line.trim());
+
+      if (lines.length === 0) {
+        // Empty file, just write header
+        await appendCSV(filePath, expectedHeader);
+        return;
+      }
+
+      const existingHeader = lines[0];
+
+      // If headers match, no migration needed
+      if (existingHeader === expectedHeader) {
+        return;
+      }
+
+      await logDebug(this.dataDir, `Migrating CSV: ${path.basename(filePath)} (header mismatch)`);
+
+      // Parse old and new headers
+      const oldColumns = this.parseCSVRow(existingHeader);
+      const newColumns = this.parseCSVRow(expectedHeader);
+
+      // Create column mapping: new column index -> old column index (or -1 if new column)
+      const columnMapping = newColumns.map(newCol => oldColumns.indexOf(newCol));
+
+      // Backup old file
+      const backupPath = `${filePath}.bak-${Date.now()}`;
+      await fs.copyFile(filePath, backupPath);
+      await logDebug(this.dataDir, `Backed up to: ${path.basename(backupPath)}`);
+
+      // Write new file with updated schema
+      const migratedLines = [expectedHeader];
+
+      for (let i = 1; i < lines.length; i++) {
+        const oldValues = this.parseCSVRow(lines[i]);
+        const newValues = columnMapping.map(oldIndex =>
+          oldIndex >= 0 ? oldValues[oldIndex] || "" : ""
+        );
+        migratedLines.push(buildCSVRow(newValues));
+      }
+
+      await fs.writeFile(filePath, migratedLines.join("\n") + "\n");
+      await logDebug(this.dataDir, `Migration complete: ${lines.length - 1} rows migrated`);
+
+    } catch (error) {
+      console.error(`Error migrating CSV ${filePath}: ${error.message}`);
+      await logDebug(this.dataDir, `Migration error: ${error.message}`);
+    }
+  }
+
+  /**
+   * Parse CSV row respecting quoted values
+   */
+  parseCSVRow(row) {
+    const result = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < row.length; i++) {
+      const char = row[i];
+      const nextChar = row[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          // Escaped quote
+          current += '"';
+          i++; // Skip next quote
+        } else {
+          // Toggle quote mode
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        // End of field
+        result.push(current);
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+
+    // Push last field
+    result.push(current);
+    return result;
   }
 
   /**
