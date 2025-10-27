@@ -358,20 +358,23 @@ class SimpleAnalytics {
   }
 
   /**
-   * Migrate CSV file if header schema has changed
+   * Migrate CSV file if header schema has changed (stream-based for memory efficiency)
    */
   async migrateCSVIfNeeded(filePath, expectedHeader) {
     try {
-      const content = await fs.readFile(filePath, "utf8");
-      const lines = content.split("\n").filter(line => line.trim());
-
-      if (lines.length === 0) {
-        // Empty file, just write header
+      // Check if file exists and is not empty
+      const stats = await fs.stat(filePath);
+      if (stats.size === 0) {
         await appendCSV(filePath, expectedHeader);
         return;
       }
 
-      const existingHeader = lines[0];
+      // Read first line to check header
+      const existingHeader = await this.readFirstLine(filePath);
+      if (!existingHeader) {
+        await appendCSV(filePath, expectedHeader);
+        return;
+      }
 
       // If headers match, no migration needed
       if (existingHeader === expectedHeader) {
@@ -392,23 +395,102 @@ class SimpleAnalytics {
       await fs.copyFile(filePath, backupPath);
       await logDebug(this.dataDir, `Backed up to: ${path.basename(backupPath)}`);
 
-      // Write new file with updated schema
-      const migratedLines = [expectedHeader];
+      // Stream-based migration to temporary file
+      const tempPath = `${filePath}.tmp-${Date.now()}`;
+      await this.migrateCSVStream(filePath, tempPath, expectedHeader, columnMapping);
 
-      for (let i = 1; i < lines.length; i++) {
-        const oldValues = this.parseCSVRow(lines[i]);
-        const newValues = columnMapping.map(oldIndex =>
-          oldIndex >= 0 ? oldValues[oldIndex] || "" : ""
-        );
-        migratedLines.push(buildCSVRow(newValues));
-      }
-
-      await fs.writeFile(filePath, migratedLines.join("\n") + "\n");
-      await logDebug(this.dataDir, `Migration complete: ${lines.length - 1} rows migrated`);
+      // Atomically replace original with migrated file
+      await fs.rename(tempPath, filePath);
+      await logDebug(this.dataDir, `Migration complete`);
 
     } catch (error) {
       console.error(`Error migrating CSV ${filePath}: ${error.message}`);
       await logDebug(this.dataDir, `Migration error: ${error.message}`);
+    }
+  }
+
+  /**
+   * Read first line of file efficiently
+   */
+  async readFirstLine(filePath) {
+    const readline = require("readline");
+    const fileStream = require("fs").createReadStream(filePath);
+    const rl = readline.createInterface({
+      input: fileStream,
+      crlfDelay: Infinity
+    });
+
+    let firstLine = null;
+    for await (const line of rl) {
+      firstLine = line;
+      break; // Only read first line
+    }
+
+    fileStream.close();
+    return firstLine;
+  }
+
+  /**
+   * Migrate CSV using streams for memory efficiency
+   */
+  async migrateCSVStream(sourcePath, destPath, newHeader, columnMapping) {
+    const readline = require("readline");
+    const fsSync = require("fs");
+
+    const readStream = fsSync.createReadStream(sourcePath);
+    const writeStream = fsSync.createWriteStream(destPath);
+
+    const rl = readline.createInterface({
+      input: readStream,
+      crlfDelay: Infinity
+    });
+
+    let isFirstLine = true;
+    let rowCount = 0;
+
+    try {
+      // Write new header
+      writeStream.write(newHeader + "\n");
+
+      for await (const line of rl) {
+        if (isFirstLine) {
+          // Skip old header
+          isFirstLine = false;
+          continue;
+        }
+
+        if (!line.trim()) {
+          continue; // Skip empty lines
+        }
+
+        // Parse and remap row
+        const oldValues = this.parseCSVRow(line);
+        const newValues = columnMapping.map(oldIndex =>
+          oldIndex >= 0 ? oldValues[oldIndex] || "" : ""
+        );
+
+        writeStream.write(buildCSVRow(newValues) + "\n");
+        rowCount++;
+      }
+
+      // Close streams
+      writeStream.end();
+      await new Promise((resolve, reject) => {
+        writeStream.on("finish", resolve);
+        writeStream.on("error", reject);
+      });
+
+      await logDebug(this.dataDir, `Migrated ${rowCount} rows`);
+
+    } catch (error) {
+      // Clean up on error
+      writeStream.destroy();
+      try {
+        await fs.unlink(destPath);
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      throw error;
     }
   }
 
