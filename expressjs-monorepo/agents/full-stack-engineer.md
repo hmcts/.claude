@@ -139,37 +139,76 @@ libs/
 
 The web and API applications use explicit imports to register modules, enabling turborepo to properly track dependencies and optimize builds. Each module exports standardized interfaces for different types of functionality.
 
-**Module exports structure:**
+**IMPORTANT: Configuration Separation Pattern**
+
+To avoid circular dependencies during Prisma client generation, module configuration MUST be separated from business logic exports:
+
+- **`src/config.ts`** - Module configuration exports (pageRoutes, apiRoutes, prismaSchemas, assets)
+- **`src/index.ts`** - Business logic exports only (services, utilities, types)
+
+**Module configuration structure:**
 ```typescript
-// libs/my-feature/src/index.ts
+// libs/my-feature/src/config.ts
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Module configuration for app registration
 export const pageRoutes = { path: path.join(__dirname, "pages") };
 export const apiRoutes = { path: path.join(__dirname, "routes") };
 export const prismaSchemas = path.join(__dirname, "../prisma");
+export const assets = path.join(__dirname, "assets/");
+```
+
+**Business logic exports:**
+```typescript
+// libs/my-feature/src/index.ts
+// Business logic exports only
+export * from "./my-feature/service.js";
+export * from "./my-feature/validation.js";
+export * from "./my-feature/queries.js";
+```
+
+**Package.json exports configuration:**
+```json
+{
+  "exports": {
+    ".": {
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    },
+    "./config": {
+      "production": "./dist/config.js",
+      "default": "./src/config.ts"
+    }
+  }
+}
 ```
 
 **Application registration:**
 ```typescript
 // apps/web/src/app.ts
-import { pageRoutes as myFeaturePages } from "@hmcts/my-feature";
+import { pageRoutes as myFeaturePages } from "@hmcts/my-feature/config";
 
 app.use(await createGovukFrontend(app, [myFeaturePages.path], { /* options */ }));
 app.use(await createSimpleRouter(myFeaturePages));
 
-// apps/web/vite.config.ts
-import { assets as myFeatureAssets } from "@hmcts/my-feature";
+// apps/web/vite.build.ts
+import { assets as myFeatureAssets } from "@hmcts/my-feature/config";
 const baseConfig = createBaseViteConfig([
-  path.join(__dirname, "src"), 
+  path.join(__dirname, "src"),
   myFeatureAssets
 ]);
 
 // apps/api/src/app.ts
-import { apiRoutes as myFeatureRoutes } from "@hmcts/my-feature";
+import { apiRoutes as myFeatureRoutes } from "@hmcts/my-feature/config";
 app.use(await createSimpleRouter(myFeatureRoutes));
 
 // apps/postgres/src/schema-discovery.ts
-import { prismaSchemas as myFeatureSchemas } from "@hmcts/my-feature";
+import { prismaSchemas as myFeatureSchemas } from "@hmcts/my-feature/config";
 const schemaPaths = [myFeatureSchemas, /* other schemas */];
-
 ```
 
 **NOTE**: By default all pages and routes are mounted at root level. To namespace routes, create subdirectories under `pages/`. E.g. `pages/admin/` for `/admin/*` routes.
@@ -258,6 +297,16 @@ Nunjucks templates need to be copied to `dist/` for production. Use a build scri
   "name": "@hmcts/user-management",
   "version": "1.0.0",
   "type": "module",
+  "exports": {
+    ".": {
+      "production": "./dist/index.js",
+      "default": "./src/index.ts"
+    },
+    "./config": {
+      "production": "./dist/config.js",
+      "default": "./src/config.ts"
+    }
+  },
   "scripts": {
     "build": "tsc && yarn build:nunjucks",
     "build:nunjucks": "mkdir -p dist/pages && cd src/pages && find . -name '*.njk' -exec sh -c 'mkdir -p ../../dist/pages/$(dirname {}) && cp {} ../../dist/pages/{}' \\;",
