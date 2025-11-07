@@ -13,19 +13,48 @@ const execAsync = promisify(exec);
 
 const CONFIG = {
   // Pricing per million tokens
+  // Extended context pricing applies when total input tokens > 200K
   PRICING: {
-    "claude-sonnet-4-5-20250929": {
-      input: 3.0,
-      output: 15.0,
-      cacheWrite: 3.75,
-      cacheRead: 0.3,
+    // AWS Bedrock EU - Claude Sonnet 4.5 (includes 10% regional premium)
+    "eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      standard: {
+        input: 3.30,
+        output: 16.50,
+        cacheWrite: 4.125,
+        cacheRead: 0.33,
+      },
+      extended: {  // >200K input tokens: 2x input, 1.5x output
+        input: 6.60,
+        output: 24.75,
+        cacheWrite: 8.25,
+        cacheRead: 0.66,
+      },
+    },
+    // AWS Bedrock EU - Claude 3 Haiku (no regional premium for 3.x)
+    "eu.anthropic.claude-3-haiku-20240307-v1:0": {
+      standard: {
+        input: 0.25,
+        output: 1.25,
+        cacheWrite: 0.3125,
+        cacheRead: 0.025,
+      },
+      extended: {  // >200K input tokens: 2x input, 1.5x output
+        input: 0.50,
+        output: 1.875,
+        cacheWrite: 0.625,
+        cacheRead: 0.05,
+      },
     },
   },
-  DEFAULT_MODEL: "claude-sonnet-4-5-20250929",
+  DEFAULT_MODEL: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  EXTENDED_CONTEXT_THRESHOLD: 200_000,  // Threshold for extended context pricing
 
   // File operation settings
   MAX_RETRIES: 3,
   RETRY_DELAY_MS: 100,
+
+  // Git cache settings
+  GIT_CACHE_FILE: ".git-cache.json",
 
   // CSV Headers
   CSV_HEADERS: {
@@ -33,7 +62,7 @@ const CONFIG = {
     turns: "session_id,user_id,turn_number,started_at,ended_at,tool_count,total_cost_usd,was_interrupted",
     commits: "commit_sha,session_id,user_id,repo_name,branch,commit_message,author_email,committed_at,files_changed,insertions,deletions,total_loc_changed",
     tools: "session_id,user_id,turn_number,tool_name,started_at,completed_at,success,processing_time_ms,input_size,output_size",
-    costs: "session_id,user_id,turn_number,message_id,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp",
+    costs: "session_id,user_id,turn_number,message_id,model,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp",
     prompts: "session_id,user_id,turn_number,category,subcategory,prompt_length,timestamp",
     gitOps: "session_id,user_id,operation_type,branch,remote,timestamp,success",
     compactions: "session_id,user_id,turn_number,timestamp,tokens_before,tokens_after,reduction_tokens,reduction_percent,compaction_type,trigger_reason",
@@ -135,6 +164,31 @@ async function handleEPIPE(error, context) {
 }
 
 /**
+ * Read git info from cache file
+ */
+async function readGitCache(dataDir) {
+  try {
+    const cachePath = path.join(dataDir, CONFIG.GIT_CACHE_FILE);
+    const content = await fs.readFile(cachePath, "utf8");
+    return JSON.parse(content);
+  } catch (e) {
+    return null; // Cache doesn't exist or invalid
+  }
+}
+
+/**
+ * Write git info to cache file
+ */
+async function writeGitCache(dataDir, data) {
+  try {
+    const cachePath = path.join(dataDir, CONFIG.GIT_CACHE_FILE);
+    await fs.writeFile(cachePath, JSON.stringify(data), "utf8");
+  } catch (e) {
+    // Silently fail - cache is optional
+  }
+}
+
+/**
  * Append to CSV file with retry logic
  */
 async function appendCSV(filePath, data) {
@@ -225,16 +279,33 @@ class SimpleAnalytics {
    * Initialize analytics (async initialization)
    */
   async initialize() {
+    await this.ensureDataDirectory(); // Need dataDir first for cache
     this.userId = await this.getUserId();
     this.repoInfo = await this.getRepoInfo();
-    await this.ensureDataDirectory();
     await this.ensureCSVHeaders();
+
+    // Write cache for next time (fire-and-forget, don't await)
+    writeGitCache(this.dataDir, {
+      userId: this.userId,
+      repoUrl: this.repoInfo.url,
+      repoName: this.repoInfo.name,
+      branch: this.repoInfo.branch,
+      headCommit: this.repoInfo.headCommit,
+      cachedAt: Date.now()
+    }).catch(() => {}); // Ignore errors - cache is optional
   }
 
   /**
-   * Get user ID from git config
+   * Get user ID from git config (with caching)
    */
   async getUserId() {
+    // Try cache first
+    const cache = await readGitCache(this.dataDir);
+    if (cache && cache.userId) {
+      return cache.userId;
+    }
+
+    // Cache miss - run git commands
     try {
       const { stdout: gitEmail } = await execAsync("git config user.email", { encoding: "utf8" });
       if (gitEmail.trim()) return gitEmail.trim();
@@ -248,9 +319,21 @@ class SimpleAnalytics {
   }
 
   /**
-   * Get repository information
+   * Get repository information (with caching)
    */
   async getRepoInfo() {
+    // Try cache first
+    const cache = await readGitCache(this.dataDir);
+    if (cache && cache.repoUrl && cache.repoName && cache.branch) {
+      return {
+        url: cache.repoUrl,
+        name: cache.repoName,
+        branch: cache.branch,
+        headCommit: cache.headCommit || "unknown",
+      };
+    }
+
+    // Cache miss - run git commands
     try {
       const { stdout: repoUrl } = await execAsync("git remote get-url origin", { encoding: "utf8" });
       const repoName = repoUrl.trim().replace(/.*\/([^\/]+)\.git$/, "$1").replace(/.*\/([^\/]+)$/, "$1");
@@ -358,23 +441,20 @@ class SimpleAnalytics {
   }
 
   /**
-   * Migrate CSV file if header schema has changed (stream-based for memory efficiency)
+   * Migrate CSV file if header schema has changed
    */
   async migrateCSVIfNeeded(filePath, expectedHeader) {
     try {
-      // Check if file exists and is not empty
-      const stats = await fs.stat(filePath);
-      if (stats.size === 0) {
+      const content = await fs.readFile(filePath, "utf8");
+      const lines = content.split("\n").filter(line => line.trim());
+
+      if (lines.length === 0) {
+        // Empty file, just write header
         await appendCSV(filePath, expectedHeader);
         return;
       }
 
-      // Read first line to check header
-      const existingHeader = await this.readFirstLine(filePath);
-      if (!existingHeader) {
-        await appendCSV(filePath, expectedHeader);
-        return;
-      }
+      const existingHeader = lines[0];
 
       // If headers match, no migration needed
       if (existingHeader === expectedHeader) {
@@ -395,102 +475,23 @@ class SimpleAnalytics {
       await fs.copyFile(filePath, backupPath);
       await logDebug(this.dataDir, `Backed up to: ${path.basename(backupPath)}`);
 
-      // Stream-based migration to temporary file
-      const tempPath = `${filePath}.tmp-${Date.now()}`;
-      await this.migrateCSVStream(filePath, tempPath, expectedHeader, columnMapping);
+      // Write new file with updated schema
+      const migratedLines = [expectedHeader];
 
-      // Atomically replace original with migrated file
-      await fs.rename(tempPath, filePath);
-      await logDebug(this.dataDir, `Migration complete`);
+      for (let i = 1; i < lines.length; i++) {
+        const oldValues = this.parseCSVRow(lines[i]);
+        const newValues = columnMapping.map(oldIndex =>
+          oldIndex >= 0 ? oldValues[oldIndex] || "" : ""
+        );
+        migratedLines.push(buildCSVRow(newValues));
+      }
+
+      await fs.writeFile(filePath, migratedLines.join("\n") + "\n");
+      await logDebug(this.dataDir, `Migration complete: ${lines.length - 1} rows migrated`);
 
     } catch (error) {
       console.error(`Error migrating CSV ${filePath}: ${error.message}`);
       await logDebug(this.dataDir, `Migration error: ${error.message}`);
-    }
-  }
-
-  /**
-   * Read first line of file efficiently
-   */
-  async readFirstLine(filePath) {
-    const readline = require("readline");
-    const fileStream = require("fs").createReadStream(filePath);
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity
-    });
-
-    let firstLine = null;
-    for await (const line of rl) {
-      firstLine = line;
-      break; // Only read first line
-    }
-
-    fileStream.close();
-    return firstLine;
-  }
-
-  /**
-   * Migrate CSV using streams for memory efficiency
-   */
-  async migrateCSVStream(sourcePath, destPath, newHeader, columnMapping) {
-    const readline = require("readline");
-    const fsSync = require("fs");
-
-    const readStream = fsSync.createReadStream(sourcePath);
-    const writeStream = fsSync.createWriteStream(destPath);
-
-    const rl = readline.createInterface({
-      input: readStream,
-      crlfDelay: Infinity
-    });
-
-    let isFirstLine = true;
-    let rowCount = 0;
-
-    try {
-      // Write new header
-      writeStream.write(newHeader + "\n");
-
-      for await (const line of rl) {
-        if (isFirstLine) {
-          // Skip old header
-          isFirstLine = false;
-          continue;
-        }
-
-        if (!line.trim()) {
-          continue; // Skip empty lines
-        }
-
-        // Parse and remap row
-        const oldValues = this.parseCSVRow(line);
-        const newValues = columnMapping.map(oldIndex =>
-          oldIndex >= 0 ? oldValues[oldIndex] || "" : ""
-        );
-
-        writeStream.write(buildCSVRow(newValues) + "\n");
-        rowCount++;
-      }
-
-      // Close streams
-      writeStream.end();
-      await new Promise((resolve, reject) => {
-        writeStream.on("finish", resolve);
-        writeStream.on("error", reject);
-      });
-
-      await logDebug(this.dataDir, `Migrated ${rowCount} rows`);
-
-    } catch (error) {
-      // Clean up on error
-      writeStream.destroy();
-      try {
-        await fs.unlink(destPath);
-      } catch (e) {
-        // Ignore cleanup errors
-      }
-      throw error;
     }
   }
 
@@ -888,6 +889,7 @@ class SimpleAnalytics {
           this.userId,
           turnNumber,
           latestRecord.message_id || "",
+          latestRecord.model_name || CONFIG.DEFAULT_MODEL,
           latestRecord.input_tokens || 0,
           latestRecord.output_tokens || 0,
           latestRecord.total_tokens || 0,
@@ -1106,13 +1108,31 @@ class SimpleAnalytics {
   }
 
   /**
-   * Calculate token cost
+   * Calculate token cost with extended context pricing support
    */
   calculateTokenCost(usage, modelName) {
-    const pricing = CONFIG.PRICING[modelName] || CONFIG.PRICING[CONFIG.DEFAULT_MODEL];
+    const modelPricing = CONFIG.PRICING[modelName] || CONFIG.PRICING[CONFIG.DEFAULT_MODEL];
 
-    const inputCost = (usage.input_tokens / 1_000_000) * pricing.input;
-    const outputCost = (usage.output_tokens / 1_000_000) * pricing.output;
+    // Calculate total input tokens (including cache) to determine pricing tier
+    const totalInputTokens = (usage.input_tokens || 0) +
+                            (usage.cache_creation_input_tokens || 0) +
+                            (usage.cache_read_input_tokens || 0);
+
+    // Select pricing tier based on input token threshold
+    // Extended pricing applies when total input > 200K tokens
+    let pricing;
+    if (modelPricing.standard && modelPricing.extended) {
+      pricing = totalInputTokens > CONFIG.EXTENDED_CONTEXT_THRESHOLD
+        ? modelPricing.extended
+        : modelPricing.standard;
+    } else {
+      // Fallback for old pricing format (direct pricing object)
+      pricing = modelPricing;
+    }
+
+    // Calculate costs using selected pricing tier
+    const inputCost = ((usage.input_tokens || 0) / 1_000_000) * pricing.input;
+    const outputCost = ((usage.output_tokens || 0) / 1_000_000) * pricing.output;
     const cacheWriteCost = ((usage.cache_creation_input_tokens || 0) / 1_000_000) * pricing.cacheWrite;
     const cacheReadCost = ((usage.cache_read_input_tokens || 0) / 1_000_000) * pricing.cacheRead;
 
@@ -1132,6 +1152,42 @@ class SimpleAnalytics {
 
 if (require.main === module) {
   let analytics;
+
+ 
+  // Use synchronous handlers to exit immediately without waiting for async operations
+  process.stdin.on("error", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    process.exit(1);
+  });
+
+  process.stdout.on("error", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    process.exit(1);
+  });
+
+  process.stderr.on("error", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    process.exit(1);
+  });
+
+  process.on("uncaughtException", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    // Try to log non-EPIPE errors (but don't wait for it)
+    handleEPIPE(error, "uncaught exception").catch(() => {});
+    process.exit(1);
+  });
 
   // Read JSON from stdin with size limit
   const MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB limit
@@ -1166,19 +1222,5 @@ if (require.main === module) {
       await handleEPIPE(error, "main execution");
       process.exit(1);
     }
-  });
-
-  // Capture EPIPE errors on stdin
-  process.stdin.on("error", async (error) => {
-    await handleEPIPE(error, "stdin stream");
-    console.error("Stdin error:", error.message);
-    process.exit(1);
-  });
-
-  // Capture any unhandled EPIPE errors
-  process.on("uncaughtException", async (error) => {
-    await handleEPIPE(error, "uncaught exception");
-    console.error("Uncaught error:", error.message);
-    process.exit(1);
   });
 }
