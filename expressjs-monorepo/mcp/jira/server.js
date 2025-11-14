@@ -13,6 +13,7 @@ import { JiraClient } from './client/jira.js';
 import { getIssue } from './tools/get-issue.js';
 import { search } from './tools/search.js';
 import { downloadAttachments } from './tools/download-attachments.js';
+import { addComment } from './tools/add-comment.js';
 
 /**
  * Load environment variables from .claude/.mcp.env if it exists in PWD
@@ -140,6 +141,24 @@ const TOOLS = [
       },
       required: ['issue_key', 'target_dir']
     }
+  },
+  {
+    name: 'jira_add_comment',
+    description: 'Add a comment to a JIRA issue',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        issueKey: {
+          type: 'string',
+          description: 'The JIRA issue key (e.g., VIBE-209)'
+        },
+        body: {
+          type: 'string',
+          description: 'The comment text (plain text or Atlassian Document Format)'
+        }
+      },
+      required: ['issueKey', 'body']
+    }
   }
 ];
 
@@ -249,6 +268,9 @@ class MCPServer {
 
       case 'jira_download_attachments':
         return await downloadAttachments(this.jiraClient, args);
+
+      case 'jira_add_comment':
+        return await addComment(this.jiraClient, args);
 
       default:
         throw new Error(`Unknown tool: ${name}`);
