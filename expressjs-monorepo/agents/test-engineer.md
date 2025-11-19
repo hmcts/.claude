@@ -139,7 +139,6 @@ const userJourneys = {
 ## Library and Framework Research
 
 When implementing tests with new libraries or frameworks:
-- **Use the context7 MCP server** to look up relevant examples and best practices
 - Search for existing usage patterns of testing libraries in similar codebases
 - Find real-world examples of Playwright configurations and test patterns
 - Research Vitest setup and configuration examples from production projects
@@ -152,7 +151,6 @@ When implementing tests with new libraries or frameworks:
    - Identify untested critical paths
    - Assess test quality and maintainability
    - Map existing user journeys covered by tests
-   - Use context7 MCP server to find testing patterns used in similar projects
 
 2. **Create comprehensive test plans**
    - Map user journeys for critical business flows
