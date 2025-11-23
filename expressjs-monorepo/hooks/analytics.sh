@@ -13,19 +13,48 @@ const execAsync = promisify(exec);
 
 const CONFIG = {
   // Pricing per million tokens
+  // Extended context pricing applies when total input tokens > 200K
   PRICING: {
-    "claude-sonnet-4-5-20250929": {
-      input: 3.0,
-      output: 15.0,
-      cacheWrite: 3.75,
-      cacheRead: 0.3,
+    // AWS Bedrock EU - Claude Sonnet 4.5 (includes 10% regional premium)
+    "eu.anthropic.claude-sonnet-4-5-20250929-v1:0": {
+      standard: {
+        input: 3.30,
+        output: 16.50,
+        cacheWrite: 4.125,
+        cacheRead: 0.33,
+      },
+      extended: {  // >200K input tokens: 2x input, 1.5x output
+        input: 6.60,
+        output: 24.75,
+        cacheWrite: 8.25,
+        cacheRead: 0.66,
+      },
+    },
+    // AWS Bedrock EU - Claude 3 Haiku (no regional premium for 3.x)
+    "eu.anthropic.claude-3-haiku-20240307-v1:0": {
+      standard: {
+        input: 0.25,
+        output: 1.25,
+        cacheWrite: 0.3125,
+        cacheRead: 0.025,
+      },
+      extended: {  // >200K input tokens: 2x input, 1.5x output
+        input: 0.50,
+        output: 1.875,
+        cacheWrite: 0.625,
+        cacheRead: 0.05,
+      },
     },
   },
-  DEFAULT_MODEL: "claude-sonnet-4-5-20250929",
+  DEFAULT_MODEL: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0",
+  EXTENDED_CONTEXT_THRESHOLD: 200_000,  // Threshold for extended context pricing
 
   // File operation settings
   MAX_RETRIES: 3,
   RETRY_DELAY_MS: 100,
+
+  // Git cache settings
+  GIT_CACHE_FILE: ".git-cache.json",
 
   // CSV Headers
   CSV_HEADERS: {
@@ -33,7 +62,7 @@ const CONFIG = {
     turns: "session_id,user_id,turn_number,started_at,ended_at,tool_count,total_cost_usd,was_interrupted",
     commits: "commit_sha,session_id,user_id,repo_name,branch,commit_message,author_email,committed_at,files_changed,insertions,deletions,total_loc_changed",
     tools: "session_id,user_id,turn_number,tool_name,started_at,completed_at,success,processing_time_ms,input_size,output_size",
-    costs: "session_id,user_id,turn_number,message_id,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp",
+    costs: "session_id,user_id,turn_number,message_id,model,branch,ticket_id,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp",
     prompts: "session_id,user_id,turn_number,category,subcategory,prompt_length,timestamp",
     gitOps: "session_id,user_id,operation_type,branch,remote,timestamp,success",
     compactions: "session_id,user_id,turn_number,timestamp,tokens_before,tokens_after,reduction_tokens,reduction_percent,compaction_type,trigger_reason",
@@ -93,6 +122,20 @@ function sleep(ms) {
 }
 
 /**
+ * Log debug messages to file
+ */
+async function logDebug(dataDir, message) {
+  try {
+    const logFile = path.join(dataDir, "analytics_debug.log");
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ${message}\n`;
+    await fs.appendFile(logFile, logEntry);
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+/**
  * Log EPIPE errors for debugging
  */
 async function logEPIPE(dataDir, context, error) {
@@ -117,6 +160,31 @@ async function handleEPIPE(error, context) {
     } catch (e) {
       // Silently fail
     }
+  }
+}
+
+/**
+ * Read git info from cache file
+ */
+async function readGitCache(dataDir) {
+  try {
+    const cachePath = path.join(dataDir, CONFIG.GIT_CACHE_FILE);
+    const content = await fs.readFile(cachePath, "utf8");
+    return JSON.parse(content);
+  } catch (e) {
+    return null; // Cache doesn't exist or invalid
+  }
+}
+
+/**
+ * Write git info to cache file
+ */
+async function writeGitCache(dataDir, data) {
+  try {
+    const cachePath = path.join(dataDir, CONFIG.GIT_CACHE_FILE);
+    await fs.writeFile(cachePath, JSON.stringify(data), "utf8");
+  } catch (e) {
+    // Silently fail - cache is optional
   }
 }
 
@@ -205,22 +273,40 @@ class SimpleAnalytics {
     this.currentTurn = {};
     this.toolStartData = {}; // Tracks tool execution data indexed by unique key
     this.toolCounter = {}; // Counter for generating unique tool keys per session
+    this.branchHistory = {}; // Tracks real-time branch/ticket for each turn per session
   }
 
   /**
    * Initialize analytics (async initialization)
    */
   async initialize() {
+    await this.ensureDataDirectory(); // Need dataDir first for cache
     this.userId = await this.getUserId();
     this.repoInfo = await this.getRepoInfo();
-    await this.ensureDataDirectory();
     await this.ensureCSVHeaders();
+
+    // Write cache for next time (fire-and-forget, don't await)
+    writeGitCache(this.dataDir, {
+      userId: this.userId,
+      repoUrl: this.repoInfo.url,
+      repoName: this.repoInfo.name,
+      branch: this.repoInfo.branch,
+      headCommit: this.repoInfo.headCommit,
+      cachedAt: Date.now()
+    }).catch(() => {}); // Ignore errors - cache is optional
   }
 
   /**
-   * Get user ID from git config
+   * Get user ID from git config (with caching)
    */
   async getUserId() {
+    // Try cache first
+    const cache = await readGitCache(this.dataDir);
+    if (cache && cache.userId) {
+      return cache.userId;
+    }
+
+    // Cache miss - run git commands
     try {
       const { stdout: gitEmail } = await execAsync("git config user.email", { encoding: "utf8" });
       if (gitEmail.trim()) return gitEmail.trim();
@@ -234,9 +320,21 @@ class SimpleAnalytics {
   }
 
   /**
-   * Get repository information
+   * Get repository information (with caching)
    */
   async getRepoInfo() {
+    // Try cache first
+    const cache = await readGitCache(this.dataDir);
+    if (cache && cache.repoUrl && cache.repoName && cache.branch) {
+      return {
+        url: cache.repoUrl,
+        name: cache.repoName,
+        branch: cache.branch,
+        headCommit: cache.headCommit || "unknown",
+      };
+    }
+
+    // Cache miss - run git commands
     try {
       const { stdout: repoUrl } = await execAsync("git remote get-url origin", { encoding: "utf8" });
       const repoName = repoUrl.trim().replace(/.*\/([^\/]+)\.git$/, "$1").replace(/.*\/([^\/]+)$/, "$1");
@@ -285,12 +383,21 @@ class SimpleAnalytics {
   async loadTurnState(sessionId) {
     try {
       const stateFile = this.getSessionStateFile(sessionId);
+      await logDebug(this.dataDir, `Loading state from: ${stateFile}`);
       if (await fileExists(stateFile)) {
         const stateData = await fs.readFile(stateFile, "utf8");
-        this.currentTurn[sessionId] = JSON.parse(stateData);
+        const state = JSON.parse(stateData);
+        this.currentTurn[sessionId] = state.currentTurn;
+        this.toolStartData[sessionId] = state.toolStartData || {};
+        this.toolCounter[sessionId] = state.toolCounter || 0;
+        this.branchHistory[sessionId] = state.branchHistory || {};
+        await logDebug(this.dataDir, `Loaded state, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}`);
+      } else {
+        await logDebug(this.dataDir, `State file doesn't exist`);
       }
     } catch (error) {
       console.error(`Error loading turn state for ${sessionId}: ${error.message}`);
+      await logDebug(this.dataDir, `Load error: ${error.message}`);
     }
   }
 
@@ -301,25 +408,129 @@ class SimpleAnalytics {
     try {
       if (this.currentTurn[sessionId]) {
         const stateFile = this.getSessionStateFile(sessionId);
-        await fs.writeFile(stateFile, JSON.stringify(this.currentTurn[sessionId], null, 2));
+        const state = {
+          currentTurn: this.currentTurn[sessionId],
+          toolStartData: this.toolStartData[sessionId] || {},
+          toolCounter: this.toolCounter[sessionId] || 0,
+          branchHistory: this.branchHistory[sessionId] || {}
+        };
+        const stateData = JSON.stringify(state, null, 2);
+        await fs.writeFile(stateFile, stateData);
+        await logDebug(this.dataDir, `Saved state: ${stateFile}, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}`);
+      } else {
+        await logDebug(this.dataDir, `No state to save for session: ${sessionId}`);
       }
     } catch (error) {
       console.error(`Error saving turn state for ${sessionId}: ${error.message}`);
+      await logDebug(this.dataDir, `Save error: ${error.message}`);
     }
   }
 
   /**
-   * Ensure all CSV files have headers
+   * Ensure all CSV files have headers and migrate if schema changed
    */
   async ensureCSVHeaders() {
     const tasks = Object.entries(CONFIG.CSV_HEADERS).map(async ([key, header]) => {
       const filePath = this.files[key];
       if (!(await fileExists(filePath))) {
         await appendCSV(filePath, header);
+      } else {
+        // Check if existing header matches expected header
+        await this.migrateCSVIfNeeded(filePath, header);
       }
     });
 
     await Promise.all(tasks);
+  }
+
+  /**
+   * Migrate CSV file if header schema has changed
+   */
+  async migrateCSVIfNeeded(filePath, expectedHeader) {
+    try {
+      const content = await fs.readFile(filePath, "utf8");
+      const lines = content.split("\n").filter(line => line.trim());
+
+      if (lines.length === 0) {
+        // Empty file, just write header
+        await appendCSV(filePath, expectedHeader);
+        return;
+      }
+
+      const existingHeader = lines[0];
+
+      // If headers match, no migration needed
+      if (existingHeader === expectedHeader) {
+        return;
+      }
+
+      await logDebug(this.dataDir, `Migrating CSV: ${path.basename(filePath)} (header mismatch)`);
+
+      // Parse old and new headers
+      const oldColumns = this.parseCSVRow(existingHeader);
+      const newColumns = this.parseCSVRow(expectedHeader);
+
+      // Create column mapping: new column index -> old column index (or -1 if new column)
+      const columnMapping = newColumns.map(newCol => oldColumns.indexOf(newCol));
+
+      // Backup old file
+      const backupPath = `${filePath}.bak-${Date.now()}`;
+      await fs.copyFile(filePath, backupPath);
+      await logDebug(this.dataDir, `Backed up to: ${path.basename(backupPath)}`);
+
+      // Write new file with updated schema
+      const migratedLines = [expectedHeader];
+
+      for (let i = 1; i < lines.length; i++) {
+        const oldValues = this.parseCSVRow(lines[i]);
+        const newValues = columnMapping.map(oldIndex =>
+          oldIndex >= 0 ? oldValues[oldIndex] || "" : ""
+        );
+        migratedLines.push(buildCSVRow(newValues));
+      }
+
+      await fs.writeFile(filePath, migratedLines.join("\n") + "\n");
+      await logDebug(this.dataDir, `Migration complete: ${lines.length - 1} rows migrated`);
+
+    } catch (error) {
+      console.error(`Error migrating CSV ${filePath}: ${error.message}`);
+      await logDebug(this.dataDir, `Migration error: ${error.message}`);
+    }
+  }
+
+  /**
+   * Parse CSV row respecting quoted values
+   */
+  parseCSVRow(row) {
+    const result = [];
+    let current = "";
+    let inQuotes = false;
+
+    for (let i = 0; i < row.length; i++) {
+      const char = row[i];
+      const nextChar = row[i + 1];
+
+      if (char === '"') {
+        if (inQuotes && nextChar === '"') {
+          // Escaped quote
+          current += '"';
+          i++; // Skip next quote
+        } else {
+          // Toggle quote mode
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        // End of field
+        result.push(current);
+        current = "";
+      } else {
+        current += char;
+      }
+    }
+
+    // Push last field
+    result.push(current);
+    return result;
   }
 
   /**
@@ -330,11 +541,15 @@ class SimpleAnalytics {
     const validation = validateEventData(eventData);
     if (!validation.valid) {
       console.error(`[Analytics Error] Invalid event data: ${validation.error}`);
+      await logDebug(this.dataDir, `Invalid event: ${validation.error}`);
       return;
     }
 
     try {
       const { hook_event_name, tool_name, session_id } = eventData;
+
+      // Debug logging
+      await logDebug(this.dataDir, `Event: ${hook_event_name}, SessionID: ${session_id}, Tool: ${tool_name || 'N/A'}`);
 
       if (hook_event_name === "UserPromptSubmit") {
         await this.handleTurnStart(session_id, eventData);
@@ -350,6 +565,7 @@ class SimpleAnalytics {
     } catch (error) {
       console.error(`[Analytics Error] Failed to process ${eventData.hook_event_name}: ${error.message}`);
       console.error(error.stack);
+      await logDebug(this.dataDir, `ERROR: ${error.message}\n${error.stack}`);
     }
   }
 
@@ -379,6 +595,35 @@ class SimpleAnalytics {
       this.currentTurn[sessionId].toolCount = 0;
       this.currentTurn[sessionId].turnCost = 0;
       // Keep totalSessionCost accumulating
+    }
+
+    // Get current git branch (fast local operation for accurate ticket attribution)
+    try {
+      const { stdout: currentBranch } = await execAsync("git branch --show-current", { encoding: "utf8" });
+      const branchName = currentBranch.trim();
+      this.currentTurn[sessionId].currentBranch = branchName;
+      this.currentTurn[sessionId].currentTicket = this.extractTicketFromBranch(branchName);
+
+      // Store real-time branch/ticket in history for this turn
+      if (!this.branchHistory[sessionId]) {
+        this.branchHistory[sessionId] = {};
+      }
+      this.branchHistory[sessionId][this.currentTurn[sessionId].number] = {
+        branch: branchName,
+        ticket: this.extractTicketFromBranch(branchName)
+      };
+    } catch (error) {
+      // Fall back to null if git query fails (e.g., not in a git repo)
+      this.currentTurn[sessionId].currentBranch = null;
+      this.currentTurn[sessionId].currentTicket = null;
+
+      if (!this.branchHistory[sessionId]) {
+        this.branchHistory[sessionId] = {};
+      }
+      this.branchHistory[sessionId][this.currentTurn[sessionId].number] = {
+        branch: null,
+        ticket: null
+      };
     }
 
     await this.saveTurnState(sessionId);
@@ -478,6 +723,21 @@ class SimpleAnalytics {
   }
 
   /**
+   * Extract ticket ID from branch name
+   */
+  extractTicketFromBranch(branch) {
+    if (!branch) return null;
+
+    // Match VIBE-123 pattern (case insensitive)
+    const match = branch.match(/VIBE-\d+/i);
+    if (match) {
+      return match[0].toUpperCase();
+    }
+
+    return null;
+  }
+
+  /**
    * Generate session ID
    */
   generateSessionId() {
@@ -511,7 +771,15 @@ class SimpleAnalytics {
    */
   async handleToolStart(sessionId, toolName, eventData) {
     const now = Date.now();
+
+    // Load state for this session if not already loaded
+    if (!this.currentTurn[sessionId]) {
+      await this.loadTurnState(sessionId);
+    }
+
     const turnNumber = this.getCurrentTurnNumber(sessionId);
+
+    await logDebug(this.dataDir, `ToolStart: ${toolName}, turn: ${turnNumber}`);
 
     // Increment tool count
     if (this.currentTurn[sessionId]) {
@@ -532,9 +800,11 @@ class SimpleAnalytics {
       inputSize: JSON.stringify(eventData.tool_input || {}).length,
     };
 
-    // Handle git commands
+    // Save state with tool tracking data
+    await this.saveTurnState(sessionId);
+
+    // Handle git operations (tracked in PreToolUse since we just need the command)
     if (toolName === "Bash" && eventData.tool_input?.command) {
-      await this.handleGitCommand(sessionId, eventData.tool_input.command);
       await this.handleGitOperations(sessionId, eventData.tool_input.command);
     }
   }
@@ -546,6 +816,13 @@ class SimpleAnalytics {
     const now = Date.now();
     const { tool_output, success = true } = eventData;
 
+    // Load state for this session if not already loaded
+    if (!this.currentTurn[sessionId]) {
+      await this.loadTurnState(sessionId);
+    }
+
+    await logDebug(this.dataDir, `ToolEnd: ${toolName}`);
+
     // Find the most recent matching tool start data
     const matchingKey = this.toolStartData[sessionId]
       ? Object.keys(this.toolStartData[sessionId])
@@ -555,6 +832,7 @@ class SimpleAnalytics {
 
     if (!matchingKey) {
       console.error(`[Analytics Warning] No matching tool start found for tool: ${toolName}, session: ${sessionId}. Tool completion data dropped.`);
+      await logDebug(this.dataDir, `ToolEnd WARNING: No matching start for ${toolName}`);
       return;
     }
 
@@ -580,6 +858,18 @@ class SimpleAnalytics {
 
     // Clean up the stored start data
     delete this.toolStartData[sessionId][matchingKey];
+
+    // Handle git commits (tracked in PostToolUse so commit has completed)
+    if (toolName === "Bash" && startData.inputSize) {
+      // Get original command from tool input via eventData
+      const command = eventData.tool_input?.command || "";
+      if (command) {
+        await this.handleGitCommand(sessionId, command);
+      }
+    }
+
+    // Save state to persist the cleanup
+    await this.saveTurnState(sessionId);
   }
 
   /**
@@ -619,36 +909,52 @@ class SimpleAnalytics {
   async handleSessionEnd(sessionId, eventData) {
     const now = Date.now();
     const { transcript_path, was_interrupted } = eventData;
+
+    // Load state for this session if not already loaded
+    if (!this.currentTurn[sessionId]) {
+      await this.loadTurnState(sessionId);
+    }
+
     const turnNumber = this.getCurrentTurnNumber(sessionId);
+
+    await logDebug(this.dataDir, `SessionEnd: transcript_path=${transcript_path}, turnNumber=${turnNumber}`);
+    await logDebug(this.dataDir, `SessionEnd: has transcript=${!!transcript_path}, has currentTurn=${!!this.currentTurn[sessionId]}`);
 
     let totalCost = 0;
 
     // Parse transcript for token usage
     if (transcript_path && this.currentTurn[sessionId]) {
-      const tokenRecords = await this.parseTranscriptTokens(transcript_path);
+      await logDebug(this.dataDir, `About to parse transcript...`);
+      const tokenRecords = await this.parseTranscriptTokens(transcript_path, sessionId);
+      await logDebug(this.dataDir, `Parsed ${tokenRecords.length} token records from transcript`);
 
       if (tokenRecords.length > 0) {
-        const latestRecord = tokenRecords[tokenRecords.length - 1];
+        // Write ALL token records with per-turn branch and ticket attribution
+        for (const record of tokenRecords) {
+          const costData = buildCSVRow([
+            sessionId,
+            this.userId,
+            record.turn_number || turnNumber,
+            record.message_id || "",
+            record.model_name || CONFIG.DEFAULT_MODEL,
+            record.branch || "",
+            record.ticket_id || "",
+            record.input_tokens || 0,
+            record.output_tokens || 0,
+            record.total_tokens || 0,
+            record.input_cost_usd || 0,
+            record.output_cost_usd || 0,
+            record.total_cost_usd || 0,
+            record.timestamp || now,
+          ]);
 
-        const costData = buildCSVRow([
-          sessionId,
-          this.userId,
-          turnNumber,
-          latestRecord.message_id || "",
-          latestRecord.input_tokens || 0,
-          latestRecord.output_tokens || 0,
-          latestRecord.total_tokens || 0,
-          latestRecord.input_cost_usd || 0,
-          latestRecord.output_cost_usd || 0,
-          latestRecord.total_cost_usd || 0,
-          latestRecord.timestamp || now,
-        ]);
+          await appendCSV(this.files.costs, costData);
+          totalCost += record.total_cost_usd || 0;
+        }
 
-        await appendCSV(this.files.costs, costData);
-
-        this.currentTurn[sessionId].turnCost = latestRecord.total_cost_usd || 0;
+        this.currentTurn[sessionId].turnCost = totalCost;
         // Accumulate total session cost incrementally
-        this.currentTurn[sessionId].totalSessionCost += latestRecord.total_cost_usd || 0;
+        this.currentTurn[sessionId].totalSessionCost += totalCost;
         await this.saveTurnState(sessionId);
       }
     }
@@ -669,16 +975,11 @@ class SimpleAnalytics {
     delete this.currentTurn[sessionId];
     delete this.toolStartData[sessionId];
     delete this.toolCounter[sessionId];
+    delete this.branchHistory[sessionId];
 
-    // Delete the per-session state file
-    try {
-      const stateFile = this.getSessionStateFile(sessionId);
-      if (await fileExists(stateFile)) {
-        await fs.unlink(stateFile);
-      }
-    } catch (error) {
-      console.error(`Error cleaning up state file for ${sessionId}: ${error.message}`);
-    }
+    // NOTE: We do NOT delete the state file here because Stop fires after each turn,
+    // not just at the end of the session. State files persist across turns and will
+    // be naturally cleaned up when sessions expire or manually by the user.
   }
 
 
@@ -813,9 +1114,9 @@ class SimpleAnalytics {
   }
 
   /**
-   * Parse transcript for token usage
+   * Parse transcript for token usage with per-turn branch and ticket tracking
    */
-  async parseTranscriptTokens(transcriptPath) {
+  async parseTranscriptTokens(transcriptPath, sessionId) {
     try {
       if (!(await fileExists(transcriptPath))) {
         return [];
@@ -824,12 +1125,39 @@ class SimpleAnalytics {
       const content = await fs.readFile(transcriptPath, "utf8");
       const lines = content.split("\n");
       const tokenRecords = [];
+      let currentTurn = 1;
+      let currentBranch = null;
+      let currentTicket = null;
 
       for (const line of lines) {
         if (!line.trim()) continue;
 
         try {
           const entry = JSON.parse(line);
+
+          // Track turn increments
+          if (entry.type === "user") {
+            currentTurn++;
+          }
+
+          // Use real-time branch history if available, otherwise fall back to transcript
+          if (this.branchHistory[sessionId] && this.branchHistory[sessionId][currentTurn]) {
+            const history = this.branchHistory[sessionId][currentTurn];
+            currentBranch = history.branch;
+            currentTicket = history.ticket;
+          } else if (entry.gitBranch) {
+            // Fallback to transcript's gitBranch only if no real-time data available
+            currentBranch = entry.gitBranch;
+            currentTicket = this.extractTicketFromBranch(entry.gitBranch);
+          }
+
+          // Check for workflow command override
+          if (entry.message?.content && typeof entry.message.content === 'string') {
+            const argsMatch = entry.message.content.match(/<command-args>([^<]+)<\/command-args>/);
+            if (argsMatch && argsMatch[1].startsWith('VIBE-')) {
+              currentTicket = argsMatch[1]; // Workflow command overrides
+            }
+          }
 
           if (entry.type === "assistant" && entry.message?.usage) {
             const usage = entry.message.usage;
@@ -838,7 +1166,10 @@ class SimpleAnalytics {
             const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
 
             tokenRecords.push({
+              turn_number: currentTurn,
               message_id: entry.message.id,
+              branch: currentBranch,
+              ticket_id: currentTicket,
               input_tokens: usage.input_tokens || 0,
               output_tokens: usage.output_tokens || 0,
               total_tokens: totalTokens,
@@ -859,13 +1190,31 @@ class SimpleAnalytics {
   }
 
   /**
-   * Calculate token cost
+   * Calculate token cost with extended context pricing support
    */
   calculateTokenCost(usage, modelName) {
-    const pricing = CONFIG.PRICING[modelName] || CONFIG.PRICING[CONFIG.DEFAULT_MODEL];
+    const modelPricing = CONFIG.PRICING[modelName] || CONFIG.PRICING[CONFIG.DEFAULT_MODEL];
 
-    const inputCost = (usage.input_tokens / 1_000_000) * pricing.input;
-    const outputCost = (usage.output_tokens / 1_000_000) * pricing.output;
+    // Calculate total input tokens (including cache) to determine pricing tier
+    const totalInputTokens = (usage.input_tokens || 0) +
+                            (usage.cache_creation_input_tokens || 0) +
+                            (usage.cache_read_input_tokens || 0);
+
+    // Select pricing tier based on input token threshold
+    // Extended pricing applies when total input > 200K tokens
+    let pricing;
+    if (modelPricing.standard && modelPricing.extended) {
+      pricing = totalInputTokens > CONFIG.EXTENDED_CONTEXT_THRESHOLD
+        ? modelPricing.extended
+        : modelPricing.standard;
+    } else {
+      // Fallback for old pricing format (direct pricing object)
+      pricing = modelPricing;
+    }
+
+    // Calculate costs using selected pricing tier
+    const inputCost = ((usage.input_tokens || 0) / 1_000_000) * pricing.input;
+    const outputCost = ((usage.output_tokens || 0) / 1_000_000) * pricing.output;
     const cacheWriteCost = ((usage.cache_creation_input_tokens || 0) / 1_000_000) * pricing.cacheWrite;
     const cacheReadCost = ((usage.cache_read_input_tokens || 0) / 1_000_000) * pricing.cacheRead;
 
@@ -885,6 +1234,42 @@ class SimpleAnalytics {
 
 if (require.main === module) {
   let analytics;
+
+ 
+  // Use synchronous handlers to exit immediately without waiting for async operations
+  process.stdin.on("error", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    process.exit(1);
+  });
+
+  process.stdout.on("error", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    process.exit(1);
+  });
+
+  process.stderr.on("error", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    process.exit(1);
+  });
+
+  process.on("uncaughtException", (error) => {
+    if (error.code === "EPIPE") {
+      // Silently exit on broken pipe - this is expected when Claude Code closes early
+      process.exit(0);
+    }
+    // Try to log non-EPIPE errors (but don't wait for it)
+    handleEPIPE(error, "uncaught exception").catch(() => {});
+    process.exit(1);
+  });
 
   // Read JSON from stdin with size limit
   const MAX_INPUT_SIZE = 10 * 1024 * 1024; // 10MB limit
@@ -919,19 +1304,5 @@ if (require.main === module) {
       await handleEPIPE(error, "main execution");
       process.exit(1);
     }
-  });
-
-  // Capture EPIPE errors on stdin
-  process.stdin.on("error", async (error) => {
-    await handleEPIPE(error, "stdin stream");
-    console.error("Stdin error:", error.message);
-    process.exit(1);
-  });
-
-  // Capture any unhandled EPIPE errors
-  process.on("uncaughtException", async (error) => {
-    await handleEPIPE(error, "uncaught exception");
-    console.error("Uncaught error:", error.message);
-    process.exit(1);
   });
 }

@@ -29,7 +29,7 @@ const path = require('path');
 
 // Configuration
 const CONFIG = {
-  CSV_FILES: ['costs.csv', 'sessions.csv', 'turns.csv'],
+  CSV_FILES: ['costs.csv', 'sessions.csv', 'turns.csv', 'compactions.csv', 'prompts.csv', 'tool_usage.csv'],
   BACKUP_SUFFIX: '.backup',
 };
 
@@ -195,11 +195,27 @@ function getRowKey(csvFileName, rowData, headers) {
     // Unique by session_id + turn_number + message_id
     return `${row.session_id}|${row.turn_number}|${row.message_id}`;
   } else if (csvFileName === 'sessions.csv') {
-    // Unique by session_id + started_at (sessions can have same ID but different start times)
-    return `${row.session_id}|${row.started_at}`;
+    // Unique by session_id + branch + started_at + ended_at
+    // Multiple sessions can have same ID, so we need branch + timestamps
+    return `${row.session_id}|${row.branch}|${row.started_at}|${row.ended_at}`;
   } else if (csvFileName === 'turns.csv') {
     // Unique by session_id + turn_number
     return `${row.session_id}|${row.turn_number}`;
+  } else if (csvFileName === 'compactions.csv') {
+    // Unique by session_id + turn_number + timestamp
+    return `${row.session_id}|${row.turn_number}|${row.timestamp}`;
+  } else if (csvFileName === 'prompts.csv') {
+    // Unique by session_id + turn_number + timestamp
+    return `${row.session_id}|${row.turn_number}|${row.timestamp}`;
+  } else if (csvFileName === 'tool_usage.csv') {
+    // Unique by session_id + turn_number + tool_name + started_at
+    return `${row.session_id}|${row.turn_number}|${row.tool_name}|${row.started_at}`;
+  } else if (csvFileName === 'commits.csv') {
+    // Unique by commit_sha + session_id
+    return `${row.commit_sha}|${row.session_id}`;
+  } else if (csvFileName === 'git_operations.csv') {
+    // Unique by session_id + operation_type + timestamp
+    return `${row.session_id}|${row.operation_type}|${row.timestamp}`;
   }
 
   // Fallback: use entire row as key
