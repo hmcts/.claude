@@ -21,17 +21,45 @@ function loadPrompts() {
 
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim();
-      if (!line || line.startsWith('session_id,user_id,')) continue;
+      // Skip duplicate header rows (check for both old and new schema)
+      if (!line || line.startsWith('session_id,agent_id,') || line.startsWith('session_id,user_id,')) continue;
 
       const cols = line.split(',');
+
+      // NEW SCHEMA: session_id,agent_id,user_id,turn_number,category,subcategory,prompt_length,timestamp
+      // Detect schema by checking if cols[1] looks like agent_id (starts with 'agent_')
+      const hasAgentId = cols[1] && cols[1].startsWith('agent_');
+
+      let sessionId, userId, turnNumber, category, subcategory, promptLength, timestamp;
+
+      if (hasAgentId) {
+        // NEW SCHEMA with agent_id
+        sessionId = cols[0];
+        userId = cols[2];
+        turnNumber = parseInt(cols[3]);
+        category = cols[4];
+        subcategory = cols[5];
+        promptLength = parseInt(cols[6]);
+        timestamp = parseInt(cols[7]);
+      } else {
+        // OLD SCHEMA without agent_id (for backwards compatibility)
+        sessionId = cols[0];
+        userId = cols[1];
+        turnNumber = parseInt(cols[2]);
+        category = cols[3];
+        subcategory = cols[4];
+        promptLength = parseInt(cols[5]);
+        timestamp = parseInt(cols[6]);
+      }
+
       prompts.push({
-        sessionId: cols[0],
-        userId: cols[1],
-        turnNumber: parseInt(cols[2]),
-        category: cols[3],
-        subcategory: cols[4],
-        promptLength: parseInt(cols[5]),
-        timestamp: parseInt(cols[6])
+        sessionId,
+        userId,
+        turnNumber,
+        category,
+        subcategory,
+        promptLength,
+        timestamp
       });
     }
 

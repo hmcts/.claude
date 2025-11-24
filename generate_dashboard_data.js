@@ -42,14 +42,36 @@ try {
     const line = sessionsLines[i].trim();
     if (!line) continue;
 
-    // Skip duplicate header rows
-    if (line.startsWith('session_id,user_id,')) continue;
+    // Skip duplicate header rows (check for both old and new schema)
+    if (line.startsWith('session_id,agent_id,') || line.startsWith('session_id,user_id,')) continue;
 
     const cols = line.split(',');
-    const sessionId = cols[0];
-    const branch = cols[4];
-    const startedAt = parseInt(cols[6]);
-    const endedAt = parseInt(cols[7]);
+
+    // NEW SCHEMA: session_id,agent_id,user_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns
+    // Detect schema by checking if cols[1] looks like agent_id (starts with 'agent_')
+    const hasAgentId = cols[1] && cols[1].startsWith('agent_');
+
+    let sessionId, branch, startedAt, endedAt, turns, cost, interruptedTurns;
+
+    if (hasAgentId) {
+      // NEW SCHEMA with agent_id
+      sessionId = cols[0];
+      branch = cols[5];
+      startedAt = parseInt(cols[7]);
+      endedAt = parseInt(cols[8]);
+      turns = parseInt(cols[9]);
+      cost = parseFloat(cols[10]);
+      interruptedTurns = parseInt(cols[11]) || 0;
+    } else {
+      // OLD SCHEMA without agent_id (for backwards compatibility)
+      sessionId = cols[0];
+      branch = cols[4];
+      startedAt = parseInt(cols[6]);
+      endedAt = parseInt(cols[7]);
+      turns = parseInt(cols[8]);
+      cost = parseFloat(cols[9]);
+      interruptedTurns = parseInt(cols[10]) || 0;
+    }
 
     // Create unique key to detect duplicates
     // Multiple sessions can have same ID, so we need branch + timestamps
@@ -64,9 +86,9 @@ try {
       branch: branch,
       startedAt: startedAt,
       endedAt: endedAt,
-      turns: parseInt(cols[8]),
-      cost: parseFloat(cols[9]),
-      interruptedTurns: parseInt(cols[10]) || 0
+      turns: turns,
+      cost: cost,
+      interruptedTurns: interruptedTurns
     });
   }
 
@@ -80,22 +102,41 @@ try {
     const line = costsLines[i].trim();
     if (!line) continue;
 
-    // Skip duplicate header rows
-    if (line.startsWith('session_id,user_id,')) continue;
+    // Skip duplicate header rows (check for both old and new schema)
+    if (line.startsWith('session_id,agent_id,') || line.startsWith('session_id,user_id,')) continue;
 
     const cols = line.split(',');
 
+    // NEW SCHEMA: session_id,agent_id,user_id,turn_number,message_id,model,branch,ticket_id,input_tokens,output_tokens,total_tokens,...
+    // Detect schema by checking if cols[1] looks like agent_id (starts with 'agent_')
+    const hasAgentId = cols[1] && cols[1].startsWith('agent_');
+
+    let sessionId, turnNumber, messageId, totalTokens;
+
+    if (hasAgentId) {
+      // NEW SCHEMA with agent_id
+      sessionId = cols[0];
+      turnNumber = cols[3];
+      messageId = cols[4];
+      totalTokens = parseInt(cols[10]) || 0; // total_tokens is now at index 10
+    } else {
+      // OLD SCHEMA without agent_id (for backwards compatibility)
+      sessionId = cols[0];
+      turnNumber = cols[2];
+      messageId = cols[3];
+      totalTokens = parseInt(cols[9]) || 0; // total_tokens was at index 9
+    }
+
     // Create unique key: session_id + turn_number + message_id
-    const uniqueKey = `${cols[0]}_${cols[2]}_${cols[3]}`;
+    const uniqueKey = `${sessionId}_${turnNumber}_${messageId}`;
 
     // Skip if we've already seen this cost entry
     if (seenCosts.has(uniqueKey)) continue;
 
     seenCosts.add(uniqueKey);
     costs.push({
-      sessionId: cols[0],
-      timestamp: parseInt(cols[5]),
-      totalTokens: parseInt(cols[7]) || 0
+      sessionId: sessionId,
+      totalTokens: totalTokens
     });
   }
 
@@ -431,13 +472,14 @@ console.log();
 console.log(JSON.stringify(weeklyData, null, 2));
 console.log();
 
-// Save to JSON file
-const outputFile = path.join(__dirname, 'collected_metrics.json');
+// Save to timestamped JSON file
+const timestamp = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+const outputFile = path.join(__dirname, `collected_metrics_${timestamp}.json`);
 fs.writeFileSync(outputFile, JSON.stringify(weeklyData, null, 2));
 console.log(`Saved to: ${outputFile}`);
 
-// Save ticket token data
-const ticketTokenFile = path.join(__dirname, 'ticket_token_data.json');
+// Save ticket token data with timestamp
+const ticketTokenFile = path.join(__dirname, `ticket_token_data_${timestamp}.json`);
 fs.writeFileSync(ticketTokenFile, JSON.stringify(ticketTokenData, null, 2));
 console.log(`Saved ticket token data to: ${ticketTokenFile}`);
 console.log();

@@ -1,0 +1,28 @@
+# Environment variables (contains API tokens)
+.env
+
+# Node modules
+node_modules/
+
+# Output files (can be regenerated)
+weekly_metrics.html
+collected_metrics.json
+ticket_token_data.json
+
+# CSV data files (sensitive analytics data)
+*.csv
+analytics-merged/
+analytics*/
+bedrock-costs*.csv
+
+# Transcript data (contains project conversations)
+**/transcripts/
+**/*-transcripts/
+Junaid-Transcripts/
+*.jsonl
+
+# Backup files
+*.backup
+
+# OS files
+.DS_Store

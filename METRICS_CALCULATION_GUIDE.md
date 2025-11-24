@@ -328,4 +328,102 @@ This handles duplicate rows and header lines in CSVs automatically.
 
 ---
 
-*Last Updated: 2025-11-16*
+## 🤖 Multi-Instance Tracking
+
+### Agent ID
+**What:** Unique identifier for each Claude Code instance (process)
+
+**Format:** `agent_<process_id>`
+
+**Use Case:** When multiple developers (or the same developer) run multiple Claude Code instances on the same project simultaneously, the agent_id distinguishes between them.
+
+**Tracking:**
+- Each CSV now includes an `agent_id` column as the 2nd column
+- Uses process PID to ensure uniqueness
+- Allows filtering analytics by specific agent instance
+
+**Example:**
+```csv
+session_id,agent_id,user_id,...
+session_123,agent_12345,dev@example.com,...
+session_456,agent_67890,dev@example.com,...
+```
+
+In this example, the same developer (`dev@example.com`) is running two Claude Code instances simultaneously, tracked as `agent_12345` and `agent_67890`.
+
+### Per-Turn Token Tracking
+**What's Captured:** Actual token usage from transcript after EVERY turn (not just at session end)
+
+**Real-Time Branch Attribution:**
+- Uses `git branch --show-current` during turn start (NOT transcript's gitBranch)
+- Stored in `branchHistory[sessionId][turnNumber]`
+- Ensures accurate ticket attribution even when switching branches mid-session
+
+**CSV Schema:**
+```
+costs.csv: session_id,agent_id,user_id,turn_number,message_id,model,branch,ticket_id,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp
+prompts.csv: session_id,agent_id,user_id,turn_number,category,subcategory,prompt_length,timestamp
+```
+
+**Historical Issue:** Old analytics hook only captured ~5% of tokens because it wasn't writing after every turn or was using unreliable branch data. Now fixed.
+
+---
+
+## 🔄 Workflow: Adding New Weeks
+
+When adding a new week (e.g., Week 7) while preserving hardcoded token data from previous weeks (e.g., Week 6 with manually-analyzed transcript tokens):
+
+### Step 1: Prepare Data
+1. Add new week definition to `WEEKS` array in `generate_dashboard_data.js`:
+   ```javascript
+   { name: 'Week 7', start: '2025-11-17', end: '2025-11-21', period: 'Nov 17-21' }
+   ```
+2. Merge Week 7 analytics CSVs into `analytics-merged/` folder
+3. Add Week 7 transcripts to appropriate folder (if doing manual transcript analysis)
+4. Update `bedrock-costs.csv` with Week 7 AWS costs
+
+### Step 2: Generate Dashboard
+```bash
+node generate_dashboard_data.js
+```
+
+This creates timestamped files:
+- `collected_metrics_YYYY-MM-DD.json`
+- `ticket_token_data_YYYY-MM-DD.json`
+
+The script will automatically update `weekly_metrics_plot.js` with all weeks' data.
+
+### Step 3: Restore Hardcoded Token Values
+**Important:** If previous weeks have hardcoded token values from manual transcript analysis (more accurate than CSV-derived values), restore them after generation.
+
+For Week 6 example (1,812,232 tokens from transcript analysis):
+1. Open `weekly_metrics_plot.js`
+2. Find Week 6 entry in `weeklyData` array
+3. Manually restore these values:
+   ```javascript
+   {
+     week: 'Week 6',
+     // ... other metrics
+     tokensPerSP: 113265,        // 1,812,232 / 16 SP
+     tokensPerCycleTime: 148544, // (1,812,232 / 5 PRs) / 2.44 days
+     locPerToken: 0.0052,        // 9,390 LOC / 1,812,232 tokens
+     // ... other metrics
+   }
+   ```
+
+### Why This Happens
+The script recalculates token metrics from analytics CSVs, which may have incomplete data due to:
+- Analytics hook not running on all turns (historical issue)
+- CSV only capturing ~5% of actual tokens used
+- Missing session data for certain branches
+
+Manual transcript analysis gives accurate token counts by parsing the entire conversation history.
+
+### Best Practice
+- **Hardcode token values** for weeks where you've done manual transcript analysis
+- **Let script calculate** for new weeks where CSV analytics are complete
+- Keep notes in `weekly_metrics_plot.js` comments about which weeks have hardcoded values
+
+---
+
+*Last Updated: 2025-11-23*
