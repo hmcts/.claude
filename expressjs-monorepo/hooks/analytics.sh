@@ -283,13 +283,17 @@ class SimpleAnalytics {
   async initialize() {
     await this.ensureDataDirectory(); // Need dataDir first for cache
 
-    // Log version on initialization
-    await logDebug(this.dataDir, `Analytics Script Version: 3.1.0 (analytics-v2 + stable agent_id per session + full token tracking)`);
+    // Run all initialization tasks in parallel for better performance
+    const [, userId, repoInfo] = await Promise.all([
+      logDebug(this.dataDir, `Analytics Script Version: 3.1.0 (analytics-v2 + stable agent_id per session + full token tracking)`),
+      this.getUserId(),
+      this.getRepoInfo(),
+      this.ensureCSVHeaders()
+    ]);
 
-    this.userId = await this.getUserId();
+    this.userId = userId;
     // Note: agentId is now per-session, stored in session state
-    this.repoInfo = await this.getRepoInfo();
-    await this.ensureCSVHeaders();
+    this.repoInfo = repoInfo;
 
     // Write cache for next time (fire-and-forget, don't await)
     writeGitCache(this.dataDir, {
