@@ -58,14 +58,14 @@ const CONFIG = {
 
   // CSV Headers
   CSV_HEADERS: {
-    sessions: "session_id,user_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns",
-    turns: "session_id,user_id,turn_number,started_at,ended_at,tool_count,total_cost_usd,was_interrupted",
-    commits: "commit_sha,session_id,user_id,repo_name,branch,commit_message,author_email,committed_at,files_changed,insertions,deletions,total_loc_changed",
-    tools: "session_id,user_id,turn_number,tool_name,started_at,completed_at,success,processing_time_ms,input_size,output_size",
-    costs: "session_id,user_id,turn_number,message_id,model,input_tokens,output_tokens,total_tokens,input_cost_usd,output_cost_usd,total_cost_usd,timestamp",
-    prompts: "session_id,user_id,turn_number,category,subcategory,prompt_length,timestamp",
-    gitOps: "session_id,user_id,operation_type,branch,remote,timestamp,success",
-    compactions: "session_id,user_id,turn_number,timestamp,tokens_before,tokens_after,reduction_tokens,reduction_percent,compaction_type,trigger_reason",
+    sessions: "session_id,agent_id,user_id,repo_url,repo_name,branch,head_commit,started_at,ended_at,turn_count,total_cost_usd,interrupted_turns",
+    turns: "session_id,agent_id,user_id,turn_number,started_at,ended_at,tool_count,total_cost_usd,was_interrupted",
+    commits: "commit_sha,session_id,agent_id,user_id,repo_name,branch,commit_message,author_email,committed_at,files_changed,insertions,deletions,total_loc_changed",
+    tools: "session_id,agent_id,user_id,turn_number,tool_name,started_at,completed_at,success,processing_time_ms,input_size,output_size",
+    costs: "session_id,agent_id,user_id,turn_number,message_id,model,branch,ticket_id,input_tokens,output_tokens,cache_creation_input_tokens,cache_read_input_tokens,thinking_output_tokens,total_tokens,input_cost_usd,output_cost_usd,cache_write_cost_usd,cache_read_cost_usd,thinking_output_cost_usd,total_cost_usd,timestamp",
+    prompts: "session_id,agent_id,user_id,turn_number,category,subcategory,prompt_length,timestamp",
+    gitOps: "session_id,agent_id,user_id,operation_type,branch,remote,timestamp,success",
+    compactions: "session_id,agent_id,user_id,turn_number,timestamp,tokens_before,tokens_after,reduction_tokens,reduction_percent,compaction_type,trigger_reason",
   },
 };
 
@@ -255,7 +255,7 @@ function validateEventData(eventData) {
 class SimpleAnalytics {
   constructor() {
     const projectDir = process.cwd();
-    this.dataDir = path.join(projectDir, ".claude", "analytics");
+    this.dataDir = path.join(projectDir, ".claude", "analytics-v2");
     this.stateDir = path.join(this.dataDir, "state");
 
     // File paths
@@ -273,6 +273,8 @@ class SimpleAnalytics {
     this.currentTurn = {};
     this.toolStartData = {}; // Tracks tool execution data indexed by unique key
     this.toolCounter = {}; // Counter for generating unique tool keys per session
+    this.branchHistory = {}; // Tracks real-time branch/ticket for each turn per session
+    this.lastTranscriptLine = {}; // Tracks last processed line number in transcript per session (for incremental parsing)
   }
 
   /**
@@ -280,9 +282,18 @@ class SimpleAnalytics {
    */
   async initialize() {
     await this.ensureDataDirectory(); // Need dataDir first for cache
-    this.userId = await this.getUserId();
-    this.repoInfo = await this.getRepoInfo();
-    await this.ensureCSVHeaders();
+
+    // Run all initialization tasks in parallel for better performance
+    const [, userId, repoInfo] = await Promise.all([
+      logDebug(this.dataDir, `Analytics Script Version: 3.1.0 (analytics-v2 + stable agent_id per session + full token tracking)`),
+      this.getUserId(),
+      this.getRepoInfo(),
+      this.ensureCSVHeaders()
+    ]);
+
+    this.userId = userId;
+    // Note: agentId is now per-session, stored in session state
+    this.repoInfo = repoInfo;
 
     // Write cache for next time (fire-and-forget, don't await)
     writeGitCache(this.dataDir, {
@@ -316,6 +327,29 @@ class SimpleAnalytics {
       // Git not configured
     }
     return process.env.USER || process.env.USERNAME || "unknown";
+  }
+
+  /**
+   * Get agent ID (unique identifier for this Claude Code session)
+   * Generates a stable ID per session and persists it in state
+   */
+  getAgentId(sessionId) {
+    // Try to load from state first
+    if (this.currentTurn[sessionId]?.agentId) {
+      return this.currentTurn[sessionId].agentId;
+    }
+
+    // Generate new agent ID for this session
+    // Uses timestamp + random string for uniqueness
+    return `agent_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  /**
+   * Get agent ID for a session (helper method)
+   * Returns the agent ID stored in session state
+   */
+  getSessionAgentId(sessionId) {
+    return this.currentTurn[sessionId]?.agentId || this.getAgentId(sessionId);
   }
 
   /**
@@ -389,7 +423,15 @@ class SimpleAnalytics {
         this.currentTurn[sessionId] = state.currentTurn;
         this.toolStartData[sessionId] = state.toolStartData || {};
         this.toolCounter[sessionId] = state.toolCounter || 0;
-        await logDebug(this.dataDir, `Loaded state, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}`);
+        this.branchHistory[sessionId] = state.branchHistory || {};
+        this.lastTranscriptLine[sessionId] = state.lastTranscriptLine || 0;
+
+        // Load agent_id for this session (stable per Claude instance)
+        if (!this.currentTurn[sessionId].agentId) {
+          this.currentTurn[sessionId].agentId = this.getAgentId(sessionId);
+        }
+
+        await logDebug(this.dataDir, `Loaded state, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}, lastLine: ${this.lastTranscriptLine[sessionId]}, agentId: ${this.currentTurn[sessionId].agentId}`);
       } else {
         await logDebug(this.dataDir, `State file doesn't exist`);
       }
@@ -409,11 +451,13 @@ class SimpleAnalytics {
         const state = {
           currentTurn: this.currentTurn[sessionId],
           toolStartData: this.toolStartData[sessionId] || {},
-          toolCounter: this.toolCounter[sessionId] || 0
+          toolCounter: this.toolCounter[sessionId] || 0,
+          branchHistory: this.branchHistory[sessionId] || {},
+          lastTranscriptLine: this.lastTranscriptLine[sessionId] || 0
         };
         const stateData = JSON.stringify(state, null, 2);
         await fs.writeFile(stateFile, stateData);
-        await logDebug(this.dataDir, `Saved state: ${stateFile}, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}`);
+        await logDebug(this.dataDir, `Saved state: ${stateFile}, turn: ${this.currentTurn[sessionId].number}, toolCounter: ${this.toolCounter[sessionId]}, lastLine: ${this.lastTranscriptLine[sessionId] || 0}`);
       } else {
         await logDebug(this.dataDir, `No state to save for session: ${sessionId}`);
       }
@@ -585,13 +629,49 @@ class SimpleAnalytics {
 
     // Initialize or increment turn
     if (!this.currentTurn[sessionId]) {
-      this.currentTurn[sessionId] = { number: 1, startTime: now, toolCount: 0, turnCost: 0, totalSessionCost: 0 };
+      this.currentTurn[sessionId] = {
+        number: 1,
+        startTime: now,
+        toolCount: 0,
+        turnCost: 0,
+        totalSessionCost: 0,
+        agentId: this.getAgentId(sessionId) // Generate stable agent ID for this session
+      };
     } else {
       this.currentTurn[sessionId].number++;
       this.currentTurn[sessionId].startTime = now;
       this.currentTurn[sessionId].toolCount = 0;
       this.currentTurn[sessionId].turnCost = 0;
-      // Keep totalSessionCost accumulating
+      // Keep totalSessionCost and agentId accumulating
+    }
+
+    // Get current git branch (fast local operation for accurate ticket attribution)
+    try {
+      const { stdout: currentBranch } = await execAsync("git branch --show-current", { encoding: "utf8" });
+      const branchName = currentBranch.trim();
+      this.currentTurn[sessionId].currentBranch = branchName;
+      this.currentTurn[sessionId].currentTicket = this.extractTicketFromBranch(branchName);
+
+      // Store real-time branch/ticket in history for this turn
+      if (!this.branchHistory[sessionId]) {
+        this.branchHistory[sessionId] = {};
+      }
+      this.branchHistory[sessionId][this.currentTurn[sessionId].number] = {
+        branch: branchName,
+        ticket: this.extractTicketFromBranch(branchName)
+      };
+    } catch (error) {
+      // Fall back to null if git query fails (e.g., not in a git repo)
+      this.currentTurn[sessionId].currentBranch = null;
+      this.currentTurn[sessionId].currentTicket = null;
+
+      if (!this.branchHistory[sessionId]) {
+        this.branchHistory[sessionId] = {};
+      }
+      this.branchHistory[sessionId][this.currentTurn[sessionId].number] = {
+        branch: null,
+        ticket: null
+      };
     }
 
     await this.saveTurnState(sessionId);
@@ -601,6 +681,7 @@ class SimpleAnalytics {
       const { category, subcategory } = this.categorizePrompt(prompt);
       const promptData = buildCSVRow([
         sessionId,
+        this.getSessionAgentId(sessionId),
         this.userId,
         this.currentTurn[sessionId].number,
         category,
@@ -691,6 +772,21 @@ class SimpleAnalytics {
   }
 
   /**
+   * Extract ticket ID from branch name
+   */
+  extractTicketFromBranch(branch) {
+    if (!branch) return null;
+
+    // Match VIBE-123 pattern (case insensitive)
+    const match = branch.match(/VIBE-\d+/i);
+    if (match) {
+      return match[0].toUpperCase();
+    }
+
+    return null;
+  }
+
+  /**
    * Generate session ID
    */
   generateSessionId() {
@@ -707,6 +803,7 @@ class SimpleAnalytics {
 
     const turnData = buildCSVRow([
       sessionId,
+      this.getSessionAgentId(sessionId),
       this.userId,
       this.currentTurn[sessionId].number,
       this.currentTurn[sessionId].startTime,
@@ -796,6 +893,7 @@ class SimpleAnalytics {
     // Write single complete row
     const toolData = buildCSVRow([
       sessionId,
+      this.getSessionAgentId(sessionId),
       this.userId,
       startData.turnNumber,
       toolName,
@@ -842,6 +940,7 @@ class SimpleAnalytics {
 
     const compactionData = buildCSVRow([
       sessionId,
+      this.getSessionAgentId(sessionId),
       this.userId,
       turnNumber,
       now,
@@ -858,6 +957,7 @@ class SimpleAnalytics {
 
   /**
    * Handle session end
+   * OPTIMIZED: Uses incremental parsing and batch CSV writes
    */
   async handleSessionEnd(sessionId, eventData) {
     const now = Date.now();
@@ -875,35 +975,66 @@ class SimpleAnalytics {
 
     let totalCost = 0;
 
-    // Parse transcript for token usage
+    // OPTIMIZED: Parse transcript for token usage using incremental parsing
     if (transcript_path && this.currentTurn[sessionId]) {
-      await logDebug(this.dataDir, `About to parse transcript...`);
-      const tokenRecords = await this.parseTranscriptTokens(transcript_path);
-      await logDebug(this.dataDir, `Parsed ${tokenRecords.length} token records from transcript`);
+      // Initialize lastTranscriptLine if not set
+      if (!this.lastTranscriptLine[sessionId]) {
+        this.lastTranscriptLine[sessionId] = 0;
+      }
+
+      const lastLine = this.lastTranscriptLine[sessionId];
+      await logDebug(this.dataDir, `About to parse transcript incrementally from line ${lastLine}...`);
+
+      const { tokenRecords, lastLineNumber } = await this.parseTranscriptTokens(transcript_path, sessionId, lastLine);
+      await logDebug(this.dataDir, `Parsed ${tokenRecords.length} NEW token records from transcript (lines ${lastLine}-${lastLineNumber})`);
 
       if (tokenRecords.length > 0) {
-        const latestRecord = tokenRecords[tokenRecords.length - 1];
+        // OPTIMIZED: Batch all CSV writes into a single operation
+        const costRows = [];
+        for (const record of tokenRecords) {
+          const costData = buildCSVRow([
+            sessionId,
+            this.getSessionAgentId(sessionId),
+            this.userId,
+            record.turn_number || turnNumber,
+            record.message_id || "",
+            record.model_name || CONFIG.DEFAULT_MODEL,
+            record.branch || "",
+            record.ticket_id || "",
+            record.input_tokens || 0,
+            record.output_tokens || 0,
+            record.cache_creation_input_tokens || 0,
+            record.cache_read_input_tokens || 0,
+            record.thinking_output_tokens || 0,
+            record.total_tokens || 0,
+            record.input_cost_usd || 0,
+            record.output_cost_usd || 0,
+            record.cache_write_cost_usd || 0,
+            record.cache_read_cost_usd || 0,
+            record.thinking_output_cost_usd || 0,
+            record.total_cost_usd || 0,
+            record.timestamp || now,
+          ]);
+          costRows.push(costData);
+          totalCost += record.total_cost_usd || 0;
+        }
 
-        const costData = buildCSVRow([
-          sessionId,
-          this.userId,
-          turnNumber,
-          latestRecord.message_id || "",
-          latestRecord.model_name || CONFIG.DEFAULT_MODEL,
-          latestRecord.input_tokens || 0,
-          latestRecord.output_tokens || 0,
-          latestRecord.total_tokens || 0,
-          latestRecord.input_cost_usd || 0,
-          latestRecord.output_cost_usd || 0,
-          latestRecord.total_cost_usd || 0,
-          latestRecord.timestamp || now,
-        ]);
+        // Single batch write instead of multiple individual writes
+        if (costRows.length > 0) {
+          await appendCSV(this.files.costs, costRows.join("\n"));
+        }
 
-        await appendCSV(this.files.costs, costData);
-
-        this.currentTurn[sessionId].turnCost = latestRecord.total_cost_usd || 0;
+        this.currentTurn[sessionId].turnCost = totalCost;
         // Accumulate total session cost incrementally
-        this.currentTurn[sessionId].totalSessionCost += latestRecord.total_cost_usd || 0;
+        this.currentTurn[sessionId].totalSessionCost += totalCost;
+
+        // Update last processed line number
+        this.lastTranscriptLine[sessionId] = lastLineNumber;
+
+        await this.saveTurnState(sessionId);
+      } else {
+        // No new records, but still update the line number in case file grew
+        this.lastTranscriptLine[sessionId] = lastLineNumber;
         await this.saveTurnState(sessionId);
       }
     }
@@ -924,6 +1055,8 @@ class SimpleAnalytics {
     delete this.currentTurn[sessionId];
     delete this.toolStartData[sessionId];
     delete this.toolCounter[sessionId];
+    delete this.branchHistory[sessionId];
+    delete this.lastTranscriptLine[sessionId];
 
     // NOTE: We do NOT delete the state file here because Stop fires after each turn,
     // not just at the end of the session. State files persist across turns and will
@@ -940,6 +1073,7 @@ class SimpleAnalytics {
 
       const sessionData = buildCSVRow([
         sessionId,
+        this.getSessionAgentId(sessionId),
         this.userId,
         this.repoInfo.url,
         this.repoInfo.name,
@@ -1001,7 +1135,7 @@ class SimpleAnalytics {
     }
 
     if (operationType) {
-      const gitOpData = buildCSVRow([sessionId, this.userId, operationType, branch, remote, now, 1]);
+      const gitOpData = buildCSVRow([sessionId, this.getSessionAgentId(sessionId), this.userId, operationType, branch, remote, now, 1]);
       await appendCSV(this.files.gitOps, gitOpData);
     }
   }
@@ -1043,6 +1177,7 @@ class SimpleAnalytics {
       const commitData = buildCSVRow([
         commitSha.trim(),
         sessionId,
+        this.getSessionAgentId(sessionId),
         this.userId,
         this.repoInfo.name,
         this.repoInfo.branch,
@@ -1062,34 +1197,93 @@ class SimpleAnalytics {
   }
 
   /**
-   * Parse transcript for token usage
+   * Parse transcript for token usage with per-turn branch and ticket tracking
+   * OPTIMIZED: Supports incremental parsing by starting from a specific line number
    */
-  async parseTranscriptTokens(transcriptPath) {
+  async parseTranscriptTokens(transcriptPath, sessionId, startLineNumber = 0) {
     try {
       if (!(await fileExists(transcriptPath))) {
-        return [];
+        return { tokenRecords: [], lastLineNumber: 0 };
       }
 
       const content = await fs.readFile(transcriptPath, "utf8");
       const lines = content.split("\n");
       const tokenRecords = [];
+      let currentTurn = 1;
+      let currentBranch = null;
+      let currentTicket = null;
+      let lineNumber = 0;
 
       for (const line of lines) {
+        lineNumber++;
+
+        // OPTIMIZATION: Skip lines we've already processed
+        if (lineNumber <= startLineNumber) {
+          // Still need to track turn numbers even for skipped lines
+          if (line.trim()) {
+            try {
+              const entry = JSON.parse(line);
+              if (entry.type === "user") {
+                currentTurn++;
+              }
+            } catch (e) {
+              // Skip invalid JSON
+            }
+          }
+          continue;
+        }
+
         if (!line.trim()) continue;
 
         try {
           const entry = JSON.parse(line);
 
+          // Track turn increments
+          if (entry.type === "user") {
+            currentTurn++;
+          }
+
+          // Use real-time branch history if available, otherwise fall back to transcript
+          if (this.branchHistory[sessionId] && this.branchHistory[sessionId][currentTurn]) {
+            const history = this.branchHistory[sessionId][currentTurn];
+            currentBranch = history.branch;
+            currentTicket = history.ticket;
+          } else if (entry.gitBranch) {
+            // Fallback to transcript's gitBranch only if no real-time data available
+            currentBranch = entry.gitBranch;
+            currentTicket = this.extractTicketFromBranch(entry.gitBranch);
+          }
+
+          // Check for workflow command override
+          if (entry.message?.content && typeof entry.message.content === 'string') {
+            const argsMatch = entry.message.content.match(/<command-args>([^<]+)<\/command-args>/);
+            if (argsMatch && argsMatch[1].startsWith('VIBE-')) {
+              currentTicket = argsMatch[1]; // Workflow command overrides
+            }
+          }
+
           if (entry.type === "assistant" && entry.message?.usage) {
             const usage = entry.message.usage;
             const modelName = entry.message.model;
             const costs = this.calculateTokenCost(usage, modelName);
-            const totalTokens = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+
+            // Calculate total tokens including ALL types (input + output + cache + thinking)
+            const totalTokens = (usage.input_tokens || 0) +
+                                (usage.output_tokens || 0) +
+                                (usage.cache_creation_input_tokens || 0) +
+                                (usage.cache_read_input_tokens || 0) +
+                                (usage.thinking_output_tokens || 0);
 
             tokenRecords.push({
+              turn_number: currentTurn,
               message_id: entry.message.id,
+              branch: currentBranch,
+              ticket_id: currentTicket,
               input_tokens: usage.input_tokens || 0,
               output_tokens: usage.output_tokens || 0,
+              cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+              cache_read_input_tokens: usage.cache_read_input_tokens || 0,
+              thinking_output_tokens: usage.thinking_output_tokens || 0,
               total_tokens: totalTokens,
               model_name: modelName,
               timestamp: new Date(entry.timestamp).getTime(),
@@ -1101,9 +1295,9 @@ class SimpleAnalytics {
         }
       }
 
-      return tokenRecords;
+      return { tokenRecords, lastLineNumber: lineNumber };
     } catch (error) {
-      return [];
+      return { tokenRecords: [], lastLineNumber: startLineNumber };
     }
   }
 
@@ -1135,13 +1329,16 @@ class SimpleAnalytics {
     const outputCost = ((usage.output_tokens || 0) / 1_000_000) * pricing.output;
     const cacheWriteCost = ((usage.cache_creation_input_tokens || 0) / 1_000_000) * pricing.cacheWrite;
     const cacheReadCost = ((usage.cache_read_input_tokens || 0) / 1_000_000) * pricing.cacheRead;
+    // Thinking tokens are charged at the same rate as output tokens
+    const thinkingOutputCost = ((usage.thinking_output_tokens || 0) / 1_000_000) * pricing.output;
 
     return {
       input_cost_usd: inputCost,
       output_cost_usd: outputCost,
       cache_write_cost_usd: cacheWriteCost,
       cache_read_cost_usd: cacheReadCost,
-      total_cost_usd: inputCost + outputCost + cacheWriteCost + cacheReadCost,
+      thinking_output_cost_usd: thinkingOutputCost,
+      total_cost_usd: inputCost + outputCost + cacheWriteCost + cacheReadCost + thinkingOutputCost,
     };
   }
 }
